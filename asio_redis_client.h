@@ -87,6 +87,16 @@ public:
     command(make_command(v), std::move(callback));
   }
 
+  void del(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"DEL", key};
+    command(make_command(v), std::move(callback));
+  }
+
+  void auth(const std::string &password, RedisCallback callback) {
+    std::vector<std::string> v{"AUTH", password};
+    command(make_command(v), std::move(callback));
+  }
+
   void get(const std::string &key, RedisCallback callback) {
     std::vector<std::string> v{"GET", key};
     command(make_command(v), std::move(callback));
