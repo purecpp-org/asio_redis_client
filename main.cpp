@@ -13,6 +13,23 @@ void test_redis_client(){
     ios.run();
   });
 
+  std::thread pub_thd([&ios]{
+    auto publisher = std::make_shared<asio_redis_client>(ios);
+    bool r = publisher->connect("127.0.0.1", 6379);
+    if(r){
+      std::cout<<"redis connected\n";
+    }else{
+      std::cout<<"redis not connect\n";
+    }
+
+    for(int i=0; i<300; i++){
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+      publisher->publish("mychannel", "hello world", [](RedisValue value){
+        std::cout<<"publish mychannel ok, number:"<<value.inspect()<<'\n';
+      });
+    }
+  });
+
   auto client = std::make_shared<asio_redis_client>(ios);
   bool r = client->connect("127.0.0.1", 6379);
   if(r){
@@ -35,14 +52,15 @@ void test_redis_client(){
     });
   }
 
-  client->subscribe("my_subscribe_key:d3668dac747fe2be7b52db24479709e3d42b3ab4", [](RedisValue value){
-    std::cout<<"subscribe: "<<value.toString()<<'\n';
+  client->subscribe("mychannel", [](RedisValue value){
+    std::cout<<"subscribe mychannel: "<<value.toString()<<'\n';
   });
 
   client->psubscribe("my_subscribe_key:*", [](RedisValue value){
     std::cout<<"psubscribe: "<<value.toString()<<'\n';
   });
 
+  pub_thd.join();
   thd.join();
 }
 

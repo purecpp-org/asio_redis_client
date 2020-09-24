@@ -92,6 +92,11 @@ public:
     command(make_command(v), std::move(callback));
   }
 
+  void publish(const std::string &channel, const std::string &msg, RedisCallback callback){
+    std::vector<std::string> v{"PUBLISH", channel, msg};
+    command(make_command(v), std::move(callback));
+  }
+
   void subscribe(const std::string &key, RedisCallback callback) {
     std::vector<std::string> v{"SUBSCRIBE", key};
     command(make_command(v), std::move(callback), key);
