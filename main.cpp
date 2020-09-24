@@ -2,35 +2,51 @@
 // Created by qicosmos on 2020/9/9.
 //
 #include <iostream>
+#include <set>
 #include "asio_redis_client.h"
+
 using namespace purecpp;
-void test_connect(){
+void test_redis_client(){
   boost::asio::io_service ios;
   boost::asio::io_service::work work(ios);
   std::thread thd([&ios]{
     ios.run();
   });
+
   auto client = std::make_shared<asio_redis_client>(ios);
-  bool r = client->connect("175.24.34.5", 6379);
-//  bool r = client->connect_with_trytimes("127.0.0.1", 6379, 0);
-//  r = client->connect_with_trytimes("127.0.0.1", 6379, 2);
+  bool r = client->connect("11.166.214.161", 6379);
   if(r){
     std::cout<<"redis connected\n";
   }else{
     std::cout<<"redis not connect\n";
   }
 
-  client->set("hello", "world");
+  client->set_error_callback([](RedisValue value){
+    std::cout<<value.inspect()<<'\n';
+  });
 
-//  client->get("unique-redis-key-example");
+  for (int i = 0; i < 100; ++i) {
+    client->set("hello", "world", [](RedisValue value){
+      std::cout<<value.toString()<<'\n';
+    });
 
-//"*3\r\n$3\r\nset\r\n$24\r\nnunique-redis-key-example\r\n$18\r\nunique-redis-value\r\n"
-//  client->command("*3\r\n$3\r\nSET\r\n$24\r\nunique-redis-key-example\r\n$18\r\nunique-redis-value\r\n");
+    client->get("hello", [](RedisValue value){
+      std::cout<<value.toString()<<'\n';
+    });
+  }
+
+  client->subscribe("RAY_REPORTER:d3668dac747fe2be7b52db24479709e3d42b3ab4", [](RedisValue value){
+    std::cout<<"subscribe: "<<value.toString()<<'\n';
+  });
+
+  client->psubscribe("RAY_REPORTER:*", [](RedisValue value){
+    std::cout<<"psubscribe: "<<value.toString()<<'\n';
+  });
 
   thd.join();
 }
 
 int main(){
-  test_connect();
+  test_redis_client();
   return 0;
 }
