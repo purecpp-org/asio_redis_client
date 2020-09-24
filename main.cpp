@@ -35,11 +35,11 @@ void test_redis_client(){
     });
   }
 
-  client->subscribe("subkey:dfdfdfdfdfe2be7b52db24479709edfdddddd4", [](RedisValue value){
+  client->subscribe("my_subscribe_key:d3668dac747fe2be7b52db24479709e3d42b3ab4", [](RedisValue value){
     std::cout<<"subscribe: "<<value.toString()<<'\n';
   });
 
-  client->psubscribe("subkey:*", [](RedisValue value){
+  client->psubscribe("my_subscribe_key:*", [](RedisValue value){
     std::cout<<"psubscribe: "<<value.toString()<<'\n';
   });
 
