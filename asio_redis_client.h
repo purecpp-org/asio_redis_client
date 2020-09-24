@@ -107,6 +107,16 @@ public:
     command(make_command(v), std::move(callback), key);
   }
 
+  void unsubscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"UNSUBSCRIBE", key};
+    command(make_command(v), std::move(callback));
+  }
+
+  void punsubscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"PUNSUBSCRIBE", key};
+    command(make_command(v), std::move(callback));
+  }
+
   void set_error_callback(std::function<void(RedisValue)> error_cb){
     error_cb_ = std::move(error_cb);
   }
@@ -220,6 +230,7 @@ private:
     if (cmd == "subscribe" || cmd == "psubscribe") {
       // reply subscribe
       std::cout << cmd << " ok\n";
+      return;
     } else if (cmd == "message") {
       value = std::move(array[2]);
     } else { // pmessage

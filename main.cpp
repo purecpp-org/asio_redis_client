@@ -15,7 +15,7 @@ void test_redis_client(){
 
   std::thread pub_thd([&ios]{
     auto publisher = std::make_shared<asio_redis_client>(ios);
-    bool r = publisher->connect("127.0.0.1", 6379);
+    bool r = publisher->connect("11.166.214.161", 6379);
     if(r){
       std::cout<<"redis connected\n";
     }else{
@@ -31,7 +31,7 @@ void test_redis_client(){
   });
 
   auto client = std::make_shared<asio_redis_client>(ios);
-  bool r = client->connect("127.0.0.1", 6379);
+  bool r = client->connect("11.166.214.161", 6379);
   if(r){
     std::cout<<"redis connected\n";
   }else{
@@ -52,8 +52,11 @@ void test_redis_client(){
     });
   }
 
-  client->subscribe("mychannel", [](RedisValue value){
+  client->subscribe("mychannel", [&client](RedisValue value){
     std::cout<<"subscribe mychannel: "<<value.toString()<<'\n';
+    client->unsubscribe("mychannel", [](RedisValue value){
+      std::cout<<"unsubscribe mychannel: "<<value.toString()<<'\n';
+    });
   });
 
   client->psubscribe("my_subscribe_key:*", [](RedisValue value){
