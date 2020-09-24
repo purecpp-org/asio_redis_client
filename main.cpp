@@ -14,7 +14,7 @@ void test_redis_client(){
   });
 
   auto client = std::make_shared<asio_redis_client>(ios);
-  bool r = client->connect("11.166.214.161", 6379);
+  bool r = client->connect("127.0.0.1", 6379);
   if(r){
     std::cout<<"redis connected\n";
   }else{
@@ -35,11 +35,11 @@ void test_redis_client(){
     });
   }
 
-  client->subscribe("RAY_REPORTER:d3668dac747fe2be7b52db24479709e3d42b3ab4", [](RedisValue value){
+  client->subscribe("subkey:dfdfdfdfdfe2be7b52db24479709edfdddddd4", [](RedisValue value){
     std::cout<<"subscribe: "<<value.toString()<<'\n';
   });
 
-  client->psubscribe("RAY_REPORTER:*", [](RedisValue value){
+  client->psubscribe("subkey:*", [](RedisValue value){
     std::cout<<"psubscribe: "<<value.toString()<<'\n';
   });
 
