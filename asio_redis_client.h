@@ -24,7 +24,7 @@ public:
 
   ~asio_redis_client() { close(); }
 
-  bool connect_with_trytimes(const std::string &host, int port,
+  bool connect_with_trytimes(const std::string &host, unsigned short port,
                              size_t try_times) {
     for (size_t i = 0; i < try_times + 1; ++i) {
       if (connect(host, port)) {
@@ -35,7 +35,7 @@ public:
     return false;
   }
 
-  bool connect(const std::string &host, int port, size_t timeout_seconds = 3) {
+  bool connect(const std::string &host, unsigned short port, size_t timeout_seconds = 3) {
     auto promise = std::make_shared<std::promise<bool>>();
     std::weak_ptr<std::promise<bool>> weak(promise);
 
@@ -131,7 +131,7 @@ public:
     error_cb_ = std::move(error_cb);
   }
 private:
-  void async_connect(const std::string &host, int port,
+  void async_connect(const std::string &host, unsigned short port,
                      std::weak_ptr<std::promise<bool>> weak) {
     boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
     auto self = this->shared_from_this();
