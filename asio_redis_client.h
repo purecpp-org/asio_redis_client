@@ -36,6 +36,8 @@ public:
   }
 
   bool connect(const std::string &host, unsigned short port, size_t timeout_seconds = 3) {
+    host_ = host;
+    port_ = port;
     auto promise = std::make_shared<std::promise<bool>>();
     std::weak_ptr<std::promise<bool>> weak(promise);
 
@@ -56,6 +58,10 @@ public:
 
   void command(const std::string &cmd, RedisCallback callback,
                std::string sub_key = "") {
+    if(!has_connected_){
+      return;
+    }
+
     std::unique_lock<std::mutex> lock(write_mtx_);
     outbox_.emplace_back(cmd);
     if (sub_key.empty()) {
@@ -93,6 +99,7 @@ public:
   }
 
   void auth(const std::string &password, RedisCallback callback) {
+    password_ = password;
     std::vector<std::string> v{"AUTH", password};
     command(make_command(v), std::move(callback));
   }
@@ -130,6 +137,10 @@ public:
   void set_error_callback(std::function<void(RedisValue)> error_cb){
     error_cb_ = std::move(error_cb);
   }
+
+  void enable_auto_reconnect(bool enable){
+    enbale_auto_reconnect_ = enable;
+  }
 private:
   void async_connect(const std::string &host, unsigned short port,
                      std::weak_ptr<std::promise<bool>> weak) {
@@ -156,9 +167,13 @@ private:
                      const boost::asio::ip::tcp::resolver::iterator &) {
                 if (!ec) {
                   has_connected_ = true;
+                  resubscribe();
                   do_read();
                 } else {
                   close();
+                  if(enbale_auto_reconnect_){
+                    async_reconnect();
+                  }
                 }
 
                 auto sp = weak.lock();
@@ -168,11 +183,47 @@ private:
         });
   }
 
+  void reset_socket(){
+    socket_ = decltype(socket_)(ios_);
+    if(!socket_.is_open()){
+      socket_.open(boost::asio::ip::tcp::v4());
+    }
+  }
+
+  void async_reconnect(){
+    reset_socket();
+    async_connect(host_, port_, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  }
+
+  void resubscribe(){
+    if(password_.empty()){
+      return;
+    }
+
+    auth(password_, [](RedisValue){});//TODO: deal with reconnect with password later
+
+    if(sub_handlers_.empty()){
+      return;
+    }
+
+    for(auto& pair: sub_handlers_){
+      if(pair.first.find("*")!=std::string::npos){//improve later
+        psubscribe(pair.first, pair.second);
+      }else{
+        subscribe(pair.first, pair.second);
+      }
+    }
+  }
+
   void do_read() {
     auto self = shared_from_this();
     async_read_some([this, self](boost::system::error_code ec, size_t size) {
       if (ec) {
         close();
+        if(enbale_auto_reconnect_){
+          async_reconnect();
+        }
         return;
       }
 
@@ -321,6 +372,7 @@ private:
       if (ec) {
         // print(ec);
         close();
+        clear_handlers();
         return;
       }
 
@@ -336,6 +388,13 @@ private:
         write();
       }
     });
+  }
+
+  void clear_handlers(){
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    if (!handlers_.empty()) {
+      handlers_.clear();
+    }
   }
 
   void close() {
@@ -371,6 +430,10 @@ private:
   std::deque<std::function<void(RedisValue)>> handlers_;
   std::map<std::string, std::function<void(RedisValue)>> sub_handlers_;
   std::function<void(RedisValue)> error_cb_ = nullptr;
+  bool enbale_auto_reconnect_ = false;
+  std::string host_;
+  unsigned short port_;
+  std::string password_;
 };
 }
 #endif // ASIO_REDIS_CLIENT_ASIO_REDIS_CLIENT_H
