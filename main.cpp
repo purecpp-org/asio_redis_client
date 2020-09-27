@@ -3,71 +3,191 @@
 //
 #include <iostream>
 #include <set>
+#include <regex>
 #include "asio_redis_client.h"
 
 using namespace purecpp;
-void test_redis_client(){
-  boost::asio::io_service ios;
-  boost::asio::io_service::work work(ios);
-  std::thread thd([&ios]{
-    ios.run();
+boost::asio::io_service ios;
+boost::asio::io_service::work work(ios);
+std::thread thd([]{
+  ios.run();
+});
+
+std::shared_ptr<asio_redis_client> create_client(){
+  auto client = std::make_shared<asio_redis_client>(ios);
+  client->enable_auto_reconnect(true);
+  bool r = client->connect("127.0.0.1", 6379);
+  assert(r);
+  return client;
+}
+
+void get_set() {
+  auto client = create_client();
+
+  client->auth("123456", [](RedisValue value) {
+    std::cout << "auth: " << value.toString() << '\n';
   });
 
-  std::thread pub_thd([&ios]{
-    auto publisher = std::make_shared<asio_redis_client>(ios);
-    bool r = publisher->connect("11.166.214.161", 6379);
-    if(r){
-      std::cout<<"redis connected\n";
-    }else{
-      std::cout<<"redis not connect\n";
-    }
+  client->set("hello", "world", [](RedisValue value) {
+    std::cout << "set: " << value.toString() << '\n';
+  });
 
-    for(int i=0; i<300; i++){
-      std::this_thread::sleep_for(std::chrono::seconds(3));
-      publisher->publish("mychannel", "hello world", [](RedisValue value){
-        std::cout<<"publish mychannel ok, number:"<<value.inspect()<<'\n';
+  client->get("hello", [](RedisValue value) {
+    std::cout << "get: " << value.toString() << '\n';
+  });
+
+  client->del("hello", [](RedisValue value) {
+    std::cout << "del: " << value.inspect() << '\n';
+  });
+
+  std::string str;
+  std::cin >> str;
+}
+
+bool stop = false;
+void create_publisher() {
+  std::thread pub_thd([] {
+    auto publisher = create_client();
+
+    for (int i = 0; i < 3000; i++) {
+      if (stop) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      publisher->publish("mychannel", "hello world", [](RedisValue value) {
+        std::cout << "publish mychannel ok, number:" << value.inspect() << '\n';
       });
     }
   });
-
-  auto client = std::make_shared<asio_redis_client>(ios);
-  bool r = client->connect("11.166.214.161", 6379);
-  if(r){
-    std::cout<<"redis connected\n";
-  }else{
-    std::cout<<"redis not connect\n";
-  }
-
-  client->set_error_callback([](RedisValue value){
-    std::cout<<value.inspect()<<'\n';
-  });
-
-  for (int i = 0; i < 100; ++i) {
-    client->set("hello", "world", [](RedisValue value){
-      std::cout<<value.toString()<<'\n';
-    });
-
-    client->get("hello", [](RedisValue value){
-      std::cout<<value.toString()<<'\n';
-    });
-  }
-
-  client->subscribe("mychannel", [&client](RedisValue value){
-    std::cout<<"subscribe mychannel: "<<value.toString()<<'\n';
-    client->unsubscribe("mychannel", [](RedisValue value){
-      std::cout<<"unsubscribe mychannel: "<<value.toString()<<'\n';
-    });
-  });
-
-  client->psubscribe("my_subscribe_key:*", [](RedisValue value){
-    std::cout<<"psubscribe: "<<value.toString()<<'\n';
-  });
-
-  pub_thd.join();
-  thd.join();
+  pub_thd.detach();
 }
 
-int main(){
-  test_redis_client();
+void pub_sub() {
+  create_publisher();
+
+  auto client = create_client();
+  client->subscribe("mychannel", [](RedisValue value) {
+    std::cout << "subscribe mychannel: " << value.toString() << '\n';
+  });
+
+  std::string str;
+  std::cin >> str;
+
+  client->unsubscribe("mychannel", [](RedisValue value) {
+    std::cout << "unsubscribe mychannel: " << value.toString() << '\n';
+  });
+
+  stop = true;
+}
+
+void reconnect() {
+  auto client = std::make_shared<asio_redis_client>(ios);
+  client->enable_auto_reconnect(true);
+  client->connect("127.0.0.1", 6379);
+  std::string str;
+  std::cin >> str;
+  client->ping([](RedisValue value) {
+    std::cout << "ping: " << value.toString() << '\n';
+  });
+  std::this_thread::sleep_for(std::chrono::hours(1));
+}
+
+void callback_hell() {
+  auto client = create_client();
+  client->auth("123456", [=](RedisValue value) {
+    std::cout << "auth: " << value.toString() << '\n';
+    client->set("hello", "world", [=](RedisValue value) {
+      std::cout << "set: " << value.toString() << '\n';
+      client->get("hello", [=](RedisValue value) {
+        std::cout << "get: " << value.toString() << '\n';
+        client->del("hello", [=](RedisValue value) {
+          std::cout << "del: " << value.inspect() << '\n';
+        });
+      });
+    });
+  });
+}
+
+#ifdef USE_FUTURE
+void future(){
+  auto client = create_client();
+  auto auth_future = client->auth("123456");
+  auto set_future = client->set("hello", "world");
+  auto get_future = client->get("hello");
+  auto del_future = client->del("hello");
+
+  std::cout<<"future------------\n";
+  std::cout<<"auth result:"<<auth_future.Get().toString()<<"\n";
+  std::cout<<"set result:"<<set_future.Get().toString()<<'\n';
+  std::cout<<"get result:"<<get_future.Get().toString()<<'\n';
+  std::cout<<"del result: ok"<<del_future.Get().toString()<<'\n';
+  client->close();
+}
+
+void future_then(){
+  auto client = create_client();
+  auto future = client->auth("123456").Then([&](RedisValue value){
+    std::cout<<"auth result:"<<value.toString()<<'\n';
+    return client->set("hello", "world").Get();
+  }).Then([&](RedisValue value){
+    std::cout<<"set result:"<<value.toString()<<'\n';
+    return client->get("hello").Get();
+  }).Then([&](RedisValue value){
+    std::cout<<"get result:"<<value.toString()<<'\n';
+    return client->del("hello").Get();
+  }).Then([](RedisValue value){
+    std::cout<<value.toString();
+    return "del result: ok";
+  });
+
+  std::cout<<"future then---------------\n";
+  auto result = future.Get();
+  std::cout<<result<<'\n';
+}
+
+void future_then_finally(){
+  auto client = create_client();
+  client->auth("123456").Then([=](RedisValue value){
+    std::cout<<"auth result:"<<value.toString()<<'\n';
+    return client->set("hello", "world").Get();
+  }).Then([=](RedisValue value){
+    std::cout<<"set result:"<<value.toString()<<'\n';
+    return client->get("hello").Get();
+  }).Then([=](RedisValue value){
+    std::cout<<"get result:"<<value.toString()<<'\n';
+    return client->del("hello").Get();
+  }).Then([](RedisValue value){
+    std::cout<<value.toString();
+    return "del result: ok";
+  }).Finally([](std::string result){
+    std::cout<<result<<'\n';
+  });
+  std::cout<<"future then finally---------------\n";
+}
+#endif
+
+void test_future(){
+#ifdef use_future
+  future();
+  future_then();
+  future_then_finally();
+#endif
+}
+
+int main() {
+  reconnect();
+
+//  get_set();
+//  pub_sub();
+//  callback_hell();
+
+//  test_future();
+
+  std::string str;
+  std::cin >> str;
+
+  ios.stop();
+  thd.join();
+
   return 0;
 }
