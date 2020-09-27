@@ -484,18 +484,20 @@ private:
       return {};
     }
 
-    std::unique_lock<std::mutex> lock(write_mtx_);
-    outbox_.emplace_back(cmd);
     std::shared_ptr<purecpp::Promise<RedisValue>> promise =
-        std::make_shared<purecpp::Promise<RedisValue>>();
+            std::make_shared<purecpp::Promise<RedisValue>>();
     auto callback = [promise](RedisValue value) {
-      promise->SetValue(std::move(value));
+        promise->SetValue(std::move(value));
     };
 
-    handlers_.emplace_back(std::move(callback));
+    {
+      std::unique_lock<std::mutex> lock(write_mtx_);
+      outbox_.emplace_back(cmd);
+      handlers_.emplace_back(std::move(callback));
 
-    if (outbox_.size() <= 1) {
-      write();
+      if (outbox_.size() <= 1) {
+        write();
+      }
     }
 
     return promise->GetFuture();

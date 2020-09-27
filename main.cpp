@@ -28,6 +28,10 @@ void get_set() {
     std::cout << "auth: " << value.toString() << '\n';
   });
 
+  client->command("info", {"stats"}, [](RedisValue value) {
+    std::cout << "info stats: " << value.toString() << '\n';
+  });
+
   client->set("hello", "world", [](RedisValue value) {
     std::cout << "set: " << value.toString() << '\n';
   });
@@ -111,6 +115,8 @@ void callback_hell() {
 #ifdef USE_FUTURE
 void future(){
   auto client = create_client();
+
+//  auto client = create_client();
   auto auth_future = client->auth("123456");
   auto set_future = client->set("hello", "world");
   auto get_future = client->get("hello");
@@ -166,8 +172,8 @@ void future_then_finally(){
 }
 #endif
 
-void test_future(){
-#ifdef use_future
+void test_future() {
+#ifdef USE_FUTURE
   future();
   future_then();
   future_then_finally();
@@ -175,13 +181,13 @@ void test_future(){
 }
 
 int main() {
-  reconnect();
+//  reconnect();
 
 //  get_set();
 //  pub_sub();
 //  callback_hell();
 
-//  test_future();
+  test_future();
 
   std::string str;
   std::cin >> str;
