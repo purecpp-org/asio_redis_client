@@ -19,12 +19,12 @@ constexpr const char *CRCF = "\r\n";
 constexpr const size_t CRCF_SIZE = 2;
 using RedisCallback = std::function<void(RedisValue)>;
 
-// constexpr use_future_t use_future;
-inline std::string make_command(const std::vector<std::string> &items) {
+template<typename Container>
+inline std::string make_command(const Container &c) {
   std::string result;
-  result.append("*").append(std::to_string(items.size())).append(CRCF);
+  result.append("*").append(std::to_string(c.size())).append(CRCF);
 
-  for (const auto &item : items) {
+  for (const auto &item : c) {
     result.append("$").append(std::to_string(item.size())).append(CRCF);
     result.append(item).append(CRCF);
   }
@@ -100,52 +100,15 @@ public:
     return command(make_command(v));
   }
 
-  Future<RedisValue> command(const std::string &cmd) {
-    if (!has_connected_) {
-      return {};
-    }
-
-    std::unique_lock<std::mutex> lock(write_mtx_);
-    outbox_.emplace_back(cmd);
-    std::shared_ptr<purecpp::Promise<RedisValue>> promise =
-        std::make_shared<purecpp::Promise<RedisValue>>();
-    auto callback = [promise](RedisValue value) {
-      promise->SetValue(std::move(value));
-    };
-
-    handlers_.emplace_back(std::move(callback));
-
-    if (outbox_.size() <= 1) {
-      write();
-    }
-
-    return promise->GetFuture();
+  Future<RedisValue> command(const std::string &cmd, std::deque<std::string> args) {
+    args.push_front(cmd);
+    return command(make_command(args));
   }
 #endif
 
-  void command(const std::string &cmd, RedisCallback callback,
-               std::string sub_key = "") {
-    if (!has_connected_) {
-      return;
-    }
-
-    std::unique_lock<std::mutex> lock(write_mtx_);
-    outbox_.emplace_back(cmd);
-    if (sub_key.empty()) {
-      handlers_.emplace_back(std::move(callback));
-    } else {
-      auto pair =
-          sub_handlers_.emplace(std::move(sub_key), std::move(callback));
-      if (!pair.second) {
-        callback_error({"duplicate subscirbe not allowed"});
-      }
-    }
-
-    if (outbox_.size() > 1) {
-      return;
-    }
-
-    write();
+  void command(const std::string &cmd, std::deque<std::string> args, RedisCallback callback){
+    args.push_front(cmd);
+    return command(make_command(args), std::move(callback));
   }
 
   template <typename T, typename = typename std::enable_if<
@@ -489,6 +452,53 @@ private:
   void async_write(const std::string &msg, Handler handler) {
     boost::asio::async_write(socket_, boost::asio::buffer(msg),
                              std::move(handler));
+  }
+
+  void command(const std::string &cmd, RedisCallback callback,
+                     std::string sub_key = "") {
+    if (!has_connected_) {
+      return;
+    }
+
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    outbox_.emplace_back(cmd);
+    if (sub_key.empty()) {
+      handlers_.emplace_back(std::move(callback));
+    } else {
+      auto pair =
+          sub_handlers_.emplace(std::move(sub_key), std::move(callback));
+      if (!pair.second) {
+        callback_error({"duplicate subscirbe not allowed"});
+      }
+    }
+
+    if (outbox_.size() > 1) {
+      return;
+    }
+
+    write();
+  }
+
+  Future<RedisValue> command(const std::string &cmd) {
+    if (!has_connected_) {
+      return {};
+    }
+
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    outbox_.emplace_back(cmd);
+    std::shared_ptr<purecpp::Promise<RedisValue>> promise =
+        std::make_shared<purecpp::Promise<RedisValue>>();
+    auto callback = [promise](RedisValue value) {
+      promise->SetValue(std::move(value));
+    };
+
+    handlers_.emplace_back(std::move(callback));
+
+    if (outbox_.size() <= 1) {
+      write();
+    }
+
+    return promise->GetFuture();
   }
 
   boost::asio::io_service &ios_;
