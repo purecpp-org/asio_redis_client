@@ -10,11 +10,27 @@
 #include <boost/asio.hpp>
 #include <boost/utility/string_view.hpp>
 #include "parser/redisparser.h"
+#ifdef USE_FUTURE
+#include <future/future.h>
+#endif
 
 namespace purecpp {
 constexpr const char *CRCF = "\r\n";
 constexpr const size_t CRCF_SIZE = 2;
 using RedisCallback = std::function<void(RedisValue)>;
+
+// constexpr use_future_t use_future;
+inline std::string make_command(const std::vector<std::string> &items) {
+  std::string result;
+  result.append("*").append(std::to_string(items.size())).append(CRCF);
+
+  for (const auto &item : items) {
+    result.append("$").append(std::to_string(item.size())).append(CRCF);
+    result.append(item).append(CRCF);
+  }
+
+  return result;
+}
 
 class asio_redis_client
     : public std::enable_shared_from_this<asio_redis_client> {
@@ -35,7 +51,8 @@ public:
     return false;
   }
 
-  bool connect(const std::string &host, unsigned short port, size_t timeout_seconds = 3) {
+  bool connect(const std::string &host, unsigned short port,
+               size_t timeout_seconds = 3) {
     host_ = host;
     port_ = port;
     auto promise = std::make_shared<std::promise<bool>>();
@@ -47,7 +64,7 @@ public:
     auto status = future.wait_for(std::chrono::seconds(timeout_seconds));
     if (status == std::future_status::timeout) {
       promise = nullptr;
-      close();
+      close_inner();
       return false;
     }
 
@@ -56,9 +73,59 @@ public:
     return r;
   }
 
+#ifdef USE_FUTURE
+  Future<RedisValue> auth(const std::string &password) {
+    password_ = password;
+    std::vector<std::string> v{"AUTH", password};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> get(const std::string &key) {
+    std::vector<std::string> v{"GET", key};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> set(const std::string &key, const std::string &value) {
+    std::vector<std::string> v{"SET", key, value};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> del(const std::string &key) {
+    std::vector<std::string> v{"DEL", key};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> ping() {
+    std::vector<std::string> v{"PING"};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> command(const std::string &cmd) {
+    if (!has_connected_) {
+      return {};
+    }
+
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    outbox_.emplace_back(cmd);
+    std::shared_ptr<purecpp::Promise<RedisValue>> promise =
+        std::make_shared<purecpp::Promise<RedisValue>>();
+    auto callback = [promise](RedisValue value) {
+      promise->SetValue(std::move(value));
+    };
+
+    handlers_.emplace_back(std::move(callback));
+
+    if (outbox_.size() <= 1) {
+      write();
+    }
+
+    return promise->GetFuture();
+  }
+#endif
+
   void command(const std::string &cmd, RedisCallback callback,
                std::string sub_key = "") {
-    if(!has_connected_){
+    if (!has_connected_) {
       return;
     }
 
@@ -67,8 +134,9 @@ public:
     if (sub_key.empty()) {
       handlers_.emplace_back(std::move(callback));
     } else {
-      auto pair = sub_handlers_.emplace(std::move(sub_key), std::move(callback));
-      if(!pair.second){
+      auto pair =
+          sub_handlers_.emplace(std::move(sub_key), std::move(callback));
+      if (!pair.second) {
         callback_error({"duplicate subscirbe not allowed"});
       }
     }
@@ -98,6 +166,11 @@ public:
     command(make_command(v), std::move(callback));
   }
 
+  void ping(RedisCallback callback) {
+    std::vector<std::string> v{"PING"};
+    command(make_command(v), std::move(callback));
+  }
+
   void auth(const std::string &password, RedisCallback callback) {
     password_ = password;
     std::vector<std::string> v{"AUTH", password};
@@ -109,7 +182,8 @@ public:
     command(make_command(v), std::move(callback));
   }
 
-  void publish(const std::string &channel, const std::string &msg, RedisCallback callback){
+  void publish(const std::string &channel, const std::string &msg,
+               RedisCallback callback) {
     std::vector<std::string> v{"PUBLISH", channel, msg};
     command(make_command(v), std::move(callback));
   }
@@ -134,13 +208,29 @@ public:
     command(make_command(v), std::move(callback));
   }
 
-  void set_error_callback(std::function<void(RedisValue)> error_cb){
+  void set_error_callback(std::function<void(RedisValue)> error_cb) {
     error_cb_ = std::move(error_cb);
   }
 
-  void enable_auto_reconnect(bool enable){
-    enbale_auto_reconnect_ = enable;
+  void enable_auto_reconnect(bool enable) { enbale_auto_reconnect_ = enable; }
+
+  void close() {
+    enbale_auto_reconnect_ = false;
+    close_inner();
   }
+
+  void close_inner() {
+    if (!has_connected_)
+      return;
+
+    has_connected_ = false;
+
+    boost::system::error_code ec;
+    // timer_.cancel(ec);
+    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    socket_.close(ec);
+  }
+
 private:
   void async_connect(const std::string &host, unsigned short port,
                      std::weak_ptr<std::promise<bool>> weak) {
@@ -166,12 +256,18 @@ private:
                weak](boost::system::error_code ec,
                      const boost::asio::ip::tcp::resolver::iterator &) {
                 if (!ec) {
+                  if (has_connected_) {
+                    return;
+                  }
+
                   has_connected_ = true;
+                  std::cout << "connect ok\n";
                   resubscribe();
                   do_read();
                 } else {
-                  close();
-                  if(enbale_auto_reconnect_){
+                  close_inner();
+                  if (enbale_auto_reconnect_) {
+                    std::cout << "retry connect\n";
                     async_reconnect();
                   }
                 }
@@ -183,34 +279,35 @@ private:
         });
   }
 
-  void reset_socket(){
+  void reset_socket() {
     socket_ = decltype(socket_)(ios_);
-    if(!socket_.is_open()){
+    if (!socket_.is_open()) {
       socket_.open(boost::asio::ip::tcp::v4());
     }
   }
 
-  void async_reconnect(){
+  void async_reconnect() {
     reset_socket();
     async_connect(host_, port_, {});
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   }
 
-  void resubscribe(){
-    if(password_.empty()){
+  void resubscribe() {
+    if (password_.empty()) {
       return;
     }
 
-    auth(password_, [](RedisValue){});//TODO: deal with reconnect with password later
+    auth(password_,
+         [](RedisValue) {}); // TODO: deal with reconnect with password later
 
-    if(sub_handlers_.empty()){
+    if (sub_handlers_.empty()) {
       return;
     }
 
-    for(auto& pair: sub_handlers_){
-      if(pair.first.find("*")!=std::string::npos){//improve later
+    for (auto &pair : sub_handlers_) {
+      if (pair.first.find("*") != std::string::npos) { // improve later
         psubscribe(pair.first, pair.second);
-      }else{
+      } else {
         subscribe(pair.first, pair.second);
       }
     }
@@ -220,24 +317,23 @@ private:
     auto self = shared_from_this();
     async_read_some([this, self](boost::system::error_code ec, size_t size) {
       if (ec) {
-        close();
-        if(enbale_auto_reconnect_){
+        close_inner();
+        if (enbale_auto_reconnect_) {
           async_reconnect();
         }
         return;
       }
 
-      for(size_t pos = 0; pos < size;){
-        std::pair<size_t, RedisParser::ParseResult> result = parser_.parse(read_buf_.data() + pos, size - pos);
+      for (size_t pos = 0; pos < size;) {
+        std::pair<size_t, RedisParser::ParseResult> result =
+            parser_.parse(read_buf_.data() + pos, size - pos);
 
-        if( result.second == RedisParser::Completed ){
+        if (result.second == RedisParser::Completed) {
           handle_message(parser_.result());
-        }
-        else if( result.second == RedisParser::Incompleted ){
+        } else if (result.second == RedisParser::Incompleted) {
           do_read();
           return;
-        }
-        else{
+        } else {
           callback_error("redis parse error");
           return;
         }
@@ -274,18 +370,6 @@ private:
     }
   }
 
-  std::string make_command(const std::vector<std::string> &items) {
-    std::string result;
-    result.append("*").append(std::to_string(items.size())).append(CRCF);
-
-    for (const auto &item : items) {
-      result.append("$").append(std::to_string(item.size())).append(CRCF);
-      result.append(item).append(CRCF);
-    }
-
-    return result;
-  }
-
   void handle_subscribe_msg(std::string cmd, std::vector<RedisValue> array) {
     RedisValue value;
     if (cmd == "subscribe" || cmd == "psubscribe") {
@@ -315,7 +399,10 @@ private:
           return;
         }
 
-        (*callback)(std::move(value));
+        auto &cb = *callback;
+        if (cb) {
+          cb(std::move(value));
+        }
       } catch (std::exception &e) {
         std::cout << e.what() << '\n';
       } catch (...) {
@@ -344,12 +431,9 @@ private:
     }
 
     try {
-      if (value.isError()) {
-        callback_error(std::move(value));
-        return;
+      if (front) {
+        front(std::move(value));
       }
-
-      front(std::move(value));
     } catch (std::exception &e) {
       std::cout << e.what() << '\n';
     } catch (...) {
@@ -371,7 +455,7 @@ private:
     async_write(msg, [this, self](const boost::system::error_code &ec, size_t) {
       if (ec) {
         // print(ec);
-        close();
+        close_inner();
         clear_handlers();
         return;
       }
@@ -390,22 +474,11 @@ private:
     });
   }
 
-  void clear_handlers(){
+  void clear_handlers() {
     std::unique_lock<std::mutex> lock(write_mtx_);
     if (!handlers_.empty()) {
       handlers_.clear();
     }
-  }
-
-  void close() {
-    if (!has_connected_)
-      return;
-
-    boost::system::error_code ec;
-    has_connected_ = false;
-    // timer_.cancel(ec);
-    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    socket_.close(ec);
   }
 
   template <typename Handler> void async_read_some(Handler handler) {
