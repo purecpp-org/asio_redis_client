@@ -12,11 +12,17 @@ boost::asio::io_service::work work(ios);
 std::thread thd([]{
   ios.run();
 });
+static const std::string host_name = "127.0.0.1";
 
 std::shared_ptr<asio_redis_client> create_client(){
   auto client = std::make_shared<asio_redis_client>(ios);
   client->enable_auto_reconnect(true);
-  bool r = client->connect("127.0.0.1", 6379);
+
+  client->set_error_callback([](RedisValue value){
+    std::cout<<value.toString()<<'\n';
+  });
+
+  bool r = client->connect(host_name, 6379);
   assert(r);
   return client;
 }
@@ -25,11 +31,11 @@ void get_set() {
   auto client = create_client();
 
   client->auth("123456", [](RedisValue value) {
-    std::cout << "auth: " << value.toString() << '\n';
-  });
+    if(value.isError()){
+      std::cout<<"redis error:"<<value.toString()<<'\n';
+    }
 
-  client->command("info", {"stats"}, [](RedisValue value) {
-    std::cout << "info stats: " << value.toString() << '\n';
+    std::cout << "auth: " << value.toString() << '\n';
   });
 
   client->set("hello", "world", [](RedisValue value) {
@@ -38,6 +44,14 @@ void get_set() {
 
   client->get("hello", [](RedisValue value) {
     std::cout << "get: " << value.toString() << '\n';
+  });
+
+  client->command("info", {"stats"}, [](RedisValue value) {
+    std::cout << "info stats: " << value.toString() << '\n';
+  });
+
+  client->command("get", {"hello"}, [](RedisValue value) {
+    std::cout << "get result: " << value.toString() << '\n';
   });
 
   client->del("hello", [](RedisValue value) {
@@ -58,9 +72,11 @@ void create_publisher() {
         break;
       }
       std::this_thread::sleep_for(std::chrono::seconds(1));
+
       publisher->publish("mychannel", "hello world", [](RedisValue value) {
         std::cout << "publish mychannel ok, number:" << value.inspect() << '\n';
       });
+
     }
   });
   pub_thd.detach();
@@ -70,8 +86,11 @@ void pub_sub() {
   create_publisher();
 
   auto client = create_client();
-  client->subscribe("mychannel", [](RedisValue value) {
+  client->subscribe("mychannel", [=](RedisValue value) {
     std::cout << "subscribe mychannel: " << value.toString() << '\n';
+//    client->unsubscribe("mychannel", [](RedisValue value) {
+//      std::cout << "unsubscribe mychannel: " << value.toString() << '\n';
+//    });
   });
 
   std::string str;
@@ -87,13 +106,23 @@ void pub_sub() {
 void reconnect() {
   auto client = std::make_shared<asio_redis_client>(ios);
   client->enable_auto_reconnect(true);
-  client->connect("127.0.0.1", 6379);
+  client->connect(host_name, 6379);
   std::string str;
   std::cin >> str;
   client->ping([](RedisValue value) {
     std::cout << "ping: " << value.toString() << '\n';
   });
-  std::this_thread::sleep_for(std::chrono::hours(1));
+}
+
+void reconnect_withtimes() {
+  auto client = std::make_shared<asio_redis_client>(ios);
+  client->enable_auto_reconnect(true);
+  client->connect_with_trytimes(host_name, 6379, 30);
+  std::string str;
+  std::cin >> str;
+  client->ping([](RedisValue value) {
+    std::cout << "ping: " << value.toString() << '\n';
+  });
 }
 
 void callback_hell() {
@@ -116,7 +145,6 @@ void callback_hell() {
 void future(){
   auto client = create_client();
 
-//  auto client = create_client();
   auto auth_future = client->auth("123456");
   auto set_future = client->set("hello", "world");
   auto get_future = client->get("hello");
@@ -182,10 +210,10 @@ void test_future() {
 
 int main() {
 //  reconnect();
-
+//  reconnect_withtimes();
 //  get_set();
-//  pub_sub();
-//  callback_hell();
+  pub_sub();
+  callback_hell();
 
   test_future();
 
