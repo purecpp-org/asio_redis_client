@@ -26,6 +26,7 @@ inline void print(Args&&... args) {
       (std::cout << std::forward<Args>(args) << ' ', 0)...};
   std::cout << "\n";
 #endif
+  (void)sizeof...(args);
 }
 
 template<typename Container>
