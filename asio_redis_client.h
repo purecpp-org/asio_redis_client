@@ -19,6 +19,15 @@ constexpr const char *CRCF = "\r\n";
 constexpr const size_t CRCF_SIZE = 2;
 using RedisCallback = std::function<void(RedisValue)>;
 
+template<typename... Args>
+inline void print(Args&&... args) {
+#ifdef _DEBUG
+  (void)std::initializer_list<int>{
+      (std::cout << std::forward<Args>(args) << ' ', 0)...};
+  std::cout << "\n";
+#endif
+}
+
 template<typename Container>
 inline std::string make_command(const Container &c) {
   std::string result;
@@ -51,7 +60,9 @@ public:
       }
 
       reset_socket();
-      std::cout<<"retry times: "<<i<<'\n';
+
+      print(1, 2, 3);
+      print("retry times: ", i);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
@@ -232,13 +243,13 @@ private:
                   }
 
                   has_connected_ = true;
-                  std::cout << "connect ok\n";
+                  print("connect ok");
                   resubscribe();
                   do_read();
                 } else {
                   close_inner();
                   if (enbale_auto_reconnect_) {
-                    std::cout << "retry connect\n";
+                    print("retry connect");
                     async_reconnect();
                   }
                 }
@@ -373,9 +384,9 @@ private:
           cb(std::move(value));
         }
       } catch (std::exception &e) {
-        std::cout << e.what() << '\n';
+        print(e.what());
       } catch (...) {
-        std::cout << "unknown exception\n";
+        print("unknown exception");
       }
     }
   }
@@ -404,9 +415,9 @@ private:
         front(std::move(value));
       }
     } catch (std::exception &e) {
-      std::cout << e.what() << '\n';
+      print(e.what());
     } catch (...) {
-      std::cout << "unknown exception\n";
+      print("unknown exception");
     }
   }
 
