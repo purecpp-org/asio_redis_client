@@ -42,12 +42,20 @@ public:
 
   bool connect_with_trytimes(const std::string &host, unsigned short port,
                              size_t try_times) {
+    bool auto_reconnect = enbale_auto_reconnect_;
+    enbale_auto_reconnect_ = false;
     for (size_t i = 0; i < try_times + 1; ++i) {
       if (connect(host, port)) {
+        enbale_auto_reconnect_ = auto_reconnect;
         return true;
       }
+
+      reset_socket();
+      std::cout<<"retry times: "<<i<<'\n';
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
+    enbale_auto_reconnect_ = auto_reconnect;
     return false;
   }
 
@@ -256,12 +264,10 @@ private:
   }
 
   void resubscribe() {
-    if (password_.empty()) {
-      return;
+    if (!password_.empty()) {
+      auth(password_,
+           [](RedisValue) {}); // TODO: deal with reconnect with password later
     }
-
-    auth(password_,
-         [](RedisValue) {}); // TODO: deal with reconnect with password later
 
     if (sub_handlers_.empty()) {
       return;
