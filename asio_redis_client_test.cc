@@ -81,8 +81,10 @@ TEST(RedisClient, ping){
     EXPECT_FALSE(value.isError());
   });
 
+#ifdef USE_FUTURE
   auto future = client->ping();
   EXPECT_FALSE(future.Get().isError());
+#endif
 }
 
 TEST(RedisClient, publish){
@@ -140,10 +142,12 @@ TEST(RedisClient, unsub){
     stop_publish = true;
   });
 
+#ifdef USE_FUTURE
   auto unsub_future = client->unsubscribe("mychannel");
   auto punsub_future = client->punsubscribe("mychanne*");
   EXPECT_FALSE(unsub_future.Get().isError());
   EXPECT_FALSE(punsub_future.Get().isError());
+#endif
 }
 
 TEST(RedisClient, pub_psub){
@@ -173,10 +177,14 @@ TEST(RedisClient, command){
     std::cout << "get result: " << value.toString() << '\n';
   });
 
+#ifdef USE_FUTURE
   auto future = client->command("info", {"stats"});
   EXPECT_FALSE(future.Get().isError());
+#endif
 }
 
+std::thread finally_thread;
+#ifdef USE_FUTURE
 TEST(RedisClient, future) {
   auto client = create_client();
 
@@ -217,8 +225,6 @@ TEST(RedisClient, future_then){
   std::cout<<result<<'\n';
 }
 
-std::thread finally_thread;
-
 TEST(RedisClient, future_then_finally){
   finally_thread = std::thread([]{
     auto client = create_client();
@@ -243,9 +249,13 @@ TEST(RedisClient, future_then_finally){
     });
   });
 }
+#endif
 
 TEST(RedisClient, close_stop){
-  finally_thread.join();
+  if(finally_thread.joinable()){
+    finally_thread.join();
+  }
+
   auto client = create_client();
   EXPECT_TRUE(client->has_connected());
   client->close();

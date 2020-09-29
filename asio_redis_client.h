@@ -216,13 +216,6 @@ public:
     return has_connected_;
   }
 
-  void reset_socket() {
-    socket_ = decltype(socket_)(ios_);
-    if (!socket_.is_open()) {
-      socket_.open(boost::asio::ip::tcp::v4());
-    }
-  }
-
 private:
   void async_connect(const std::string &host, unsigned short port,
                      std::weak_ptr<std::promise<bool>> weak) {
@@ -348,6 +341,13 @@ private:
     // timer_.cancel(ec);
     socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
     socket_.close(ec);
+  }
+
+  void reset_socket() {
+    socket_ = decltype(socket_)(ios_);
+    if (!socket_.is_open()) {
+      socket_.open(boost::asio::ip::tcp::v4());
+    }
   }
 
   bool is_subscribe(const std::string &cmd) {
@@ -516,6 +516,7 @@ private:
     write();
   }
 
+#ifdef USE_FUTURE
   Future<RedisValue> command(const std::string &cmd) {
     if (!has_connected_) {
       return {};
@@ -539,6 +540,7 @@ private:
 
     return promise->GetFuture();
   }
+#endif
 
   boost::asio::io_service &ios_;
   boost::asio::ip::tcp::resolver resolver_;
