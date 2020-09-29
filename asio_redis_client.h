@@ -50,25 +50,25 @@ public:
 
   ~asio_redis_client() { close(); }
 
-  bool connect_with_trytimes(const std::string &host, unsigned short port,
+  size_t connect_with_trytimes(const std::string &host, unsigned short port,
                              size_t try_times) {
     bool auto_reconnect = enbale_auto_reconnect_;
     enbale_auto_reconnect_ = false;
-    for (size_t i = 0; i < try_times + 1; ++i) {
+    size_t has_try = 0;
+    for (; has_try < try_times; has_try++) {
       if (connect(host, port)) {
         enbale_auto_reconnect_ = auto_reconnect;
-        return true;
+        return has_try;
       }
 
       reset_socket();
 
-      print(1, 2, 3);
-      print("retry times: ", i);
+      print("retry times: ", has_try);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     enbale_auto_reconnect_ = auto_reconnect;
-    return false;
+    return has_try;
   }
 
   bool connect(const std::string &host, unsigned short port,
@@ -123,6 +123,16 @@ public:
   Future<RedisValue> command(const std::string &cmd, std::deque<std::string> args) {
     args.push_front(cmd);
     return command(make_command(args));
+  }
+
+  Future<RedisValue> unsubscribe(const std::string &key) {
+    std::vector<std::string> v{"UNSUBSCRIBE", key};
+    return command(make_command(v));
+  }
+
+  Future<RedisValue> punsubscribe(const std::string &key) {
+    std::vector<std::string> v{"PUNSUBSCRIBE", key};
+    return command(make_command(v));
   }
 #endif
 
@@ -202,16 +212,15 @@ public:
     close_inner();
   }
 
-  void close_inner() {
-    if (!has_connected_)
-      return;
+  bool has_connected() const {
+    return has_connected_;
+  }
 
-    has_connected_ = false;
-
-    boost::system::error_code ec;
-    // timer_.cancel(ec);
-    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    socket_.close(ec);
+  void reset_socket() {
+    socket_ = decltype(socket_)(ios_);
+    if (!socket_.is_open()) {
+      socket_.open(boost::asio::ip::tcp::v4());
+    }
   }
 
 private:
@@ -248,6 +257,7 @@ private:
                   resubscribe();
                   do_read();
                 } else {
+                  print(ec.message());
                   close_inner();
                   if (enbale_auto_reconnect_) {
                     print("retry connect");
@@ -262,13 +272,6 @@ private:
         });
   }
 
-  void reset_socket() {
-    socket_ = decltype(socket_)(ios_);
-    if (!socket_.is_open()) {
-      socket_.open(boost::asio::ip::tcp::v4());
-    }
-  }
-
   void async_reconnect() {
     reset_socket();
     async_connect(host_, port_, {});
@@ -277,8 +280,15 @@ private:
 
   void resubscribe() {
     if (!password_.empty()) {
+      auto self = shared_from_this();
       auth(password_,
-           [](RedisValue) {}); // TODO: deal with reconnect with password later
+           [this, self](RedisValue value) {
+        if(value.isError()){
+          close_inner();
+          return;
+        }
+        print("resubscribe successful");
+      });
     }
 
     if (sub_handlers_.empty()) {
@@ -324,6 +334,20 @@ private:
 
       do_read();
     });
+  }
+
+  void close_inner() {
+    if (!has_connected_)
+      return;
+
+    has_connected_ = false;
+
+    clear_handlers();
+
+    boost::system::error_code ec;
+    // timer_.cancel(ec);
+    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    socket_.close(ec);
   }
 
   bool is_subscribe(const std::string &cmd) {
@@ -437,7 +461,6 @@ private:
       if (ec) {
         // print(ec);
         close_inner();
-        clear_handlers();
         return;
       }
 
@@ -483,11 +506,7 @@ private:
     if (sub_key.empty()) {
       handlers_.emplace_back(std::move(callback));
     } else {
-      auto pair =
-          sub_handlers_.emplace(std::move(sub_key), std::move(callback));
-      if (!pair.second) {
-        callback_error({"duplicate subscirbe not allowed"});
-      }
+      sub_handlers_.emplace(std::move(sub_key), std::move(callback));
     }
 
     if (outbox_.size() > 1) {
