@@ -83,6 +83,7 @@ public:
     auto future = promise->get_future();
     auto status = future.wait_for(std::chrono::seconds(timeout_seconds));
     if (status == std::future_status::timeout) {
+      print("connect timeout");
       promise = nullptr;
       close_inner();
       return false;
@@ -376,17 +377,18 @@ private:
   }
 
   void handle_subscribe_msg(std::string cmd, std::vector<RedisValue> array) {
+    std::string subscribe_key = array[1].toString();
     RedisValue value;
     if (cmd == "subscribe" || cmd == "psubscribe") {
       // reply subscribe
-      std::cout << cmd << " ok\n";
+//      std::cout << cmd << " ok\n";
+      print(cmd);
       return;
     } else if (cmd == "message") {
       value = std::move(array[2]);
     } else { // pmessage
       value = std::move(array[3]);
     }
-    std::string subscribe_key = array[1].toString();
 
     std::function<void(RedisValue)> *callback = nullptr;
     {
@@ -394,6 +396,8 @@ private:
       auto it = sub_handlers_.find(subscribe_key);
       if (it != sub_handlers_.end()) {
         callback = &it->second;
+      }else{
+        print("subscibe key: ", subscribe_key, " not found");
       }
     }
 
@@ -419,6 +423,8 @@ private:
   void callback_error(RedisValue v) {
     if (error_cb_) {
       error_cb_(std::move(v));
+    }else{
+      print(v.inspect());
     }
   }
 
@@ -459,7 +465,7 @@ private:
     auto self = shared_from_this();
     async_write(msg, [this, self](const boost::system::error_code &ec, size_t) {
       if (ec) {
-        // print(ec);
+        print(ec.message());
         close_inner();
         return;
       }
