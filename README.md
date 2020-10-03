@@ -1,5 +1,5 @@
 # asio_redis_client
-an thread-safe, easy to use async redis client implemented in c++11.
+an thread-safe, easy to use, cross-platform async redis client implemented in c++11.
 
 The best c++ redis client!
 
