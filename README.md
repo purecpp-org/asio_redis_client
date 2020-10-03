@@ -1,5 +1,5 @@
 # asio_redis_client
-an easy to use async redis client implemented in c++11.
+an thread-safe, easy to use async redis client implemented in c++11.
 
 The best c++ redis client!
 
@@ -159,3 +159,8 @@ client->auth("123456", [](RedisValue value) {
 
 # important
 If you like it, please start it, let more people know it the best c++ redis client :)
+
+# roadmap
+
+1. pipeline
+2. redis cluster
