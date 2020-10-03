@@ -137,7 +137,6 @@ void future_then_finally(){
 # error handling
 
 ```
-//network error
 auto client = std::make_shared<asio_redis_client>(ios);
 client->enable_auto_reconnect(true);
 
