@@ -158,7 +158,7 @@ client->auth("123456", [](RedisValue value) {
 ```
 
 # important
-If you like it, please star it, let more people know it the best c++ redis client :)
+If you like it, please star it, let more people know it is the best c++ redis client :)
 
 # roadmap
 
