@@ -23,7 +23,7 @@ using RedisCallback = std::function<void(RedisValue)>;
 
 template<typename... Args>
 inline void print(Args&&... args) {
-#ifdef _DEBUG
+#ifdef DEBUG_INFO
   (void)std::initializer_list<int>{
       (std::cout << std::forward<Args>(args) << ' ', 0)...};
   std::cout << "\n";
