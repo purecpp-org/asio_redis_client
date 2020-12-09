@@ -169,6 +169,7 @@ public:
 
   void auth(const std::string &password, RedisCallback callback) {
     password_ = password;
+    auth_callback_ = callback;
     std::vector<std::string> v{"AUTH", password};
     command(make_command(v), std::move(callback));
   }
@@ -252,7 +253,7 @@ private:
                   print(ec.message());
                   close_inner();
                   if (enbale_auto_reconnect_) {
-                    print("retry connect");
+                    print("auto connect");
                     async_reconnect();
                   }
                 }
@@ -273,15 +274,8 @@ private:
   void resubscribe() {
     if (!password_.empty()) {
       auto self = shared_from_this();
-      auth(password_,
-           [this, self](RedisValue value) {
-        if(value.IsIOError()){
-          print(value.toString());
-          close_inner();
-          return;
-        }
-        print("auth finished");
-      });
+      assert(auth_callback_);
+      auth(password_,std::move(auth_callback_));
     }
 
     if (sub_handlers_.empty()) {
@@ -549,6 +543,7 @@ private:
   std::string host_;
   unsigned short port_;
   std::string password_;
+  RedisCallback auth_callback_ = nullptr;
 };
 }
 #endif // ASIO_REDIS_CLIENT_ASIO_REDIS_CLIENT_H
