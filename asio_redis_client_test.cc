@@ -19,10 +19,6 @@ std::shared_ptr<asio_redis_client> create_client(){
   auto client = std::make_shared<asio_redis_client>(ios);
   client->enable_auto_reconnect(true);
 
-  client->set_error_callback([](RedisValue value){
-    std::cout<<value.toString()<<'\n';
-  });
-
   bool r = client->connect(host_name, 6379);
   assert(r);
   return client;

@@ -204,10 +204,6 @@ public:
     command(make_command(v), std::move(callback));
   }
 
-  void set_error_callback(std::function<void(RedisValue)> error_cb) {
-    error_cb_ = std::move(error_cb);
-  }
-
   void enable_auto_reconnect(bool enable) { enbale_auto_reconnect_ = enable; }
 
   void close() {
@@ -321,7 +317,7 @@ private:
           do_read();
           return;
         } else {
-          callback_error("redis parse error");
+          handle_message(RedisValue(ErrorCode::redis_parse_error, "redis parse error"));
           return;
         }
 
@@ -405,11 +401,6 @@ private:
 
     if (callback) {
       try {
-        if (value.isError()) {
-          callback_error(std::move(value));
-          return;
-        }
-
         auto &cb = *callback;
         if (cb) {
           cb(std::move(value));
@@ -422,20 +413,12 @@ private:
     }
   }
 
-  void callback_error(RedisValue v) {
-    if (error_cb_) {
-      error_cb_(std::move(v));
-    }else{
-      print(v.inspect());
-    }
-  }
-
   void handle_non_subscribe_msg(RedisValue value) {
     std::function<void(RedisValue)> front = nullptr;
     {
       std::unique_lock<std::mutex> lock(write_mtx_);
       if (handlers_.empty()) {
-        callback_error(std::move(value));
+        print("warning! no handler deal with this value : ", value.inspect());
         return;
       }
 
@@ -561,7 +544,6 @@ private:
   RedisParser parser_;
   std::deque<std::function<void(RedisValue)>> handlers_;
   std::map<std::string, std::function<void(RedisValue)>> sub_handlers_;
-  std::function<void(RedisValue)> error_cb_ = nullptr;
   bool enbale_auto_reconnect_ = false;
   std::string host_;
   unsigned short port_;
