@@ -300,6 +300,7 @@ private:
     auto self = shared_from_this();
     async_read_some([this, self](boost::system::error_code ec, size_t size) {
       if (ec) {
+        handle_message(RedisValue(ErrorCode::io_error, ec.message()));
         close_inner();
         if (enbale_auto_reconnect_) {
           async_reconnect();
@@ -491,10 +492,6 @@ private:
 
   void command(const std::string &cmd, RedisCallback callback,
                      std::string sub_key = "") {
-    if (!has_connected_) {
-      return;
-    }
-
     std::unique_lock<std::mutex> lock(write_mtx_);
     outbox_.emplace_back(cmd);
     if (sub_key.empty()) {
