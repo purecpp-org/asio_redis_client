@@ -26,6 +26,7 @@ public:
     REDIS_CLIENT_DECL RedisValue(std::vector<char> buf);
     REDIS_CLIENT_DECL RedisValue(std::vector<char> buf, struct ErrorTag);
     REDIS_CLIENT_DECL RedisValue(std::vector<RedisValue> array);
+    RedisValue(int error_code, const std::string& error_msg);
 
 
     RedisValue(const RedisValue &) = default;
@@ -52,10 +53,14 @@ public:
     // for dump content of the value.
     REDIS_CLIENT_DECL std::string inspect() const;
 
-    // Return true if value not a error
+    // Return true if value not a error_
     REDIS_CLIENT_DECL bool isOk() const;
-    // Return true if value is a error
+    // Return true if value is a error_
     REDIS_CLIENT_DECL bool isError() const;
+
+    int ErrorCode(){
+      return error_code_;
+    }
 
     // Return true if this is a null.
     REDIS_CLIENT_DECL bool isNull() const;
@@ -93,17 +98,17 @@ private:
         }
     };
 
-
-    boost::variant<NullTag, int64_t, std::vector<char>, std::vector<RedisValue> > value;
-    bool error;
+    boost::variant<NullTag, int64_t, std::vector<char>, std::vector<RedisValue> > value_;
+    bool error_;
+    int error_code_ = 0;
 };
 
 
 template<typename T>
 T RedisValue::castTo() const
 {
-    if( value.type() == typeid(T) )
-        return boost::get<T>(value);
+    if(value_.type() == typeid(T) )
+        return boost::get<T>(value_);
     else
         return T();
 }
@@ -111,7 +116,7 @@ T RedisValue::castTo() const
 template<typename T>
 bool RedisValue::typeEq() const
 {
-    if( value.type() == typeid(T) )
+    if(value_.type() == typeid(T) )
         return true;
     else
         return false;

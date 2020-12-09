@@ -13,43 +13,49 @@
 namespace purecpp {
 
 RedisValue::RedisValue()
-    : value(NullTag()), error(false)
+    : value_(NullTag()), error_(false)
 {
 }
 
 RedisValue::RedisValue(RedisValue &&other)
-    : value(std::move(other.value)), error(other.error)
+    : value_(std::move(other.value_)), error_(other.error_), error_code_(other.error_code_)
 {
 }
 
 RedisValue::RedisValue(int64_t i)
-    : value(i), error(false)
+    : value_(i), error_(false)
 {
 }
 
 RedisValue::RedisValue(const char *s)
-    : value( std::vector<char>(s, s + strlen(s)) ), error(false)
+    : value_(std::vector<char>(s, s + strlen(s)) ), error_(false)
 {
 }
 
 RedisValue::RedisValue(const std::string &s)
-    : value( std::vector<char>(s.begin(), s.end()) ), error(false)
+    : value_(std::vector<char>(s.begin(), s.end()) ), error_(false)
 {
 }
 
 RedisValue::RedisValue(std::vector<char> buf)
-    : value(std::move(buf)), error(false)
+    : value_(std::move(buf)), error_(false)
 {
 }
 
 RedisValue::RedisValue(std::vector<char> buf, struct ErrorTag)
-    : value(std::move(buf)), error(true)
+    : value_(std::move(buf)), error_(true)
 {
 }
 
 RedisValue::RedisValue(std::vector<RedisValue> array)
-    : value(std::move(array)), error(false)
+    : value_(std::move(array)), error_(false)
 {
+}
+
+RedisValue::RedisValue(int error_code, const std::string& error_msg)
+    : value_(std::vector<char>(error_msg.begin(), error_msg.end())), error_(true), error_code_(error_code)
+{
+
 }
 
 std::vector<RedisValue> RedisValue::toArray() const
@@ -130,7 +136,7 @@ bool RedisValue::isOk() const
 
 bool RedisValue::isError() const
 {
-    return error;
+    return error_;
 }
 
 bool RedisValue::isNull() const
@@ -161,35 +167,35 @@ bool RedisValue::isArray() const
 std::vector<char> &RedisValue::getByteArray()
 {
     assert(isByteArray());
-    return boost::get<std::vector<char>>(value);
+    return boost::get<std::vector<char>>(value_);
 }
 
 const std::vector<char> &RedisValue::getByteArray() const
 {
     assert(isByteArray());
-    return boost::get<std::vector<char>>(value);
+    return boost::get<std::vector<char>>(value_);
 }
 
 std::vector<RedisValue> &RedisValue::getArray()
 {
     assert(isArray());
-    return boost::get<std::vector<RedisValue>>(value);
+    return boost::get<std::vector<RedisValue>>(value_);
 }
 
 const std::vector<RedisValue> &RedisValue::getArray() const
 {
     assert(isArray());
-    return boost::get<std::vector<RedisValue>>(value);
+    return boost::get<std::vector<RedisValue>>(value_);
 }
 
 bool RedisValue::operator == (const RedisValue &rhs) const
 {
-    return value == rhs.value;
+    return value_ == rhs.value_;
 }
 
 bool RedisValue::operator != (const RedisValue &rhs) const
 {
-    return !(value == rhs.value);
+    return !(value_ == rhs.value_);
 }
 
 }
