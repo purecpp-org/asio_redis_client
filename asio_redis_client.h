@@ -10,6 +10,8 @@
 #include <boost/asio.hpp>
 #include <boost/utility/string_view.hpp>
 #include "parser/redisparser.h"
+#include "error_code.h"
+
 #ifdef USE_FUTURE
 #include <future/future.h>
 #endif
