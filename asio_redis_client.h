@@ -334,7 +334,7 @@ private:
 
     has_connected_ = false;
 
-    clear_handlers();
+    clear_outbox_and_handlers();
 
     boost::system::error_code ec;
     // timer_.cancel(ec);
@@ -469,10 +469,13 @@ private:
     });
   }
 
-  void clear_handlers() {
+  void clear_outbox_and_handlers() {
     std::unique_lock<std::mutex> lock(write_mtx_);
     if (!handlers_.empty()) {
       handlers_.clear();
+    }
+    if(!outbox_.empty()){
+      outbox_.clear();
     }
   }
 
