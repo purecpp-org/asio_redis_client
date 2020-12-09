@@ -275,11 +275,12 @@ private:
       auto self = shared_from_this();
       auth(password_,
            [this, self](RedisValue value) {
-        if(value.isError()){
+        if(value.IsIOError()){
+          print(value.toString());
           close_inner();
           return;
         }
-        print("resubscribe successful");
+        print("auth finished");
       });
     }
 
@@ -499,7 +500,7 @@ private:
     } else {
       sub_handlers_.emplace(std::move(sub_key), std::move(callback));
     }
-
+    print("add handler");//for debug
     if (outbox_.size() > 1) {
       return;
     }

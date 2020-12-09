@@ -58,6 +58,10 @@ public:
     // Return true if value is a error_
     REDIS_CLIENT_DECL bool isError() const;
 
+    bool IsIOError() const {
+      return error_code_ == 1;
+    }
+
     int ErrorCode(){
       return error_code_;
     }
