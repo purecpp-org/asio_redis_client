@@ -21,6 +21,13 @@ namespace purecpp {
     constexpr const size_t CRCF_SIZE = 2;
     using RedisCallback = std::function<void(RedisValue)>;
 
+    struct retry_task_t{
+        size_t retry_times;
+        std::string cmd;
+        RedisCallback callback;
+        boost::asio::steady_timer timer;
+    };
+
     template<typename... Args>
     inline void print(Args &&... args) {
 #ifdef DEBUG_INFO
@@ -205,6 +212,17 @@ namespace purecpp {
           command(make_command(v), std::move(callback));
         }
 
+        void command(const std::string &key, std::deque<std::string> args, size_t retry_times, RedisCallback callback) {
+          args.push_front(key);
+          auto cmd = make_command(args);
+          if (retry_times > 0) {
+            retry_tasks_.emplace_back(retry_task_t{retry_times + 1, cmd, callback, create_timer()});
+            command(cmd, nullptr);
+          } else {
+            command(cmd, std::move(callback));
+          }
+        }
+
         void enable_auto_reconnect(bool enable) { enbale_auto_reconnect_ = enable; }
 
         void close() {
@@ -214,6 +232,10 @@ namespace purecpp {
 
         bool has_connected() const {
           return has_connected_;
+        }
+
+        void set_retry_timeout_ms(size_t retry_timeout_ms){
+          retry_timeout_ms_ = retry_timeout_ms;
         }
 
     private:
@@ -248,6 +270,7 @@ namespace purecpp {
                                     has_connected_ = true;
                                     print("connect ok");
                                     resubscribe();
+                                    retry_tasks_when_reconnected();
                                     do_read();
                                   } else {
                                     print(ec.message());
@@ -413,6 +436,10 @@ namespace purecpp {
           std::function<void(RedisValue)> front = nullptr;
           {
             std::unique_lock<std::mutex> lock(write_mtx_);
+            if(!retry_tasks_.empty()) {
+              handle_retry_task(std::move(value));
+              return;
+            }
             if (handlers_.empty()) {
               print("warning! no handler deal with this value : ", value.inspect());
               return;
@@ -478,8 +505,70 @@ namespace purecpp {
 
         void handle_io_error(const boost::system::error_code &ec){
           std::unique_lock<std::mutex> lock(write_mtx_);
+
+          if(!retry_tasks_.empty()){
+            handle_retry_tasks_when_io_error(ec);
+            return;
+          }
+
           for (auto &handler : handlers_) {
             handler(RedisValue(ErrorCode::io_error, ec.message()));
+          }
+        }
+
+        void handle_retry_tasks_when_io_error(const boost::system::error_code &ec){
+          for (auto i = retry_tasks_.begin(); i != retry_tasks_.end() ; ) {
+            i->retry_times--;
+            if(i->retry_times > 0){
+              ++i;
+              continue;
+            }
+
+            if (i->retry_times == 0){
+              i->callback(RedisValue(ErrorCode::io_error, ec.message()));
+              i = retry_tasks_.erase(i);
+            }
+            else{
+              ++i;
+            }
+          }
+        }
+
+        void handle_retry_task(RedisValue value){
+          auto &task = retry_tasks_.back();
+          task.timer.cancel();
+          task.callback(std::move(value));
+          retry_tasks_.pop_back();
+        }
+
+        boost::asio::steady_timer create_timer() {
+          boost::asio::steady_timer timer(ios_, std::chrono::milliseconds(retry_timeout_ms_));
+
+          timer.async_wait([this](const boost::system::error_code &ec) {
+              if (ec) {
+                return;
+              }
+
+              handle_timeout();
+          });
+
+          return timer;
+        }
+
+        void handle_timeout(){
+          std::unique_lock<std::mutex> lock(write_mtx_);
+          if(retry_tasks_.empty()){
+            return;
+          }
+
+          auto &task = retry_tasks_.back();
+          task.callback(RedisValue(ErrorCode::io_error, "request timeout"));
+          retry_tasks_.pop_back();
+        }
+
+        void retry_tasks_when_reconnected(){
+          for(auto& task : retry_tasks_){
+            command(task.cmd, nullptr);
           }
         }
 
@@ -498,10 +587,13 @@ namespace purecpp {
                      std::string sub_key = "") {
           std::unique_lock<std::mutex> lock(write_mtx_);
           outbox_.emplace_back(cmd);
-          if (sub_key.empty()) {
-            handlers_.emplace_back(std::move(callback));
-          } else {
-            sub_handlers_.emplace(std::move(sub_key), std::move(callback));
+
+          if(callback!= nullptr){
+            if (sub_key.empty()) {
+              handlers_.emplace_back(std::move(callback));
+            } else {
+              sub_handlers_.emplace(std::move(sub_key), std::move(callback));
+            }
           }
 
           if (outbox_.size() > 1) {
@@ -553,6 +645,9 @@ namespace purecpp {
         unsigned short port_;
         std::string password_;
         RedisCallback auth_callback_ = nullptr;
+
+        std::deque<retry_task_t> retry_tasks_;
+        std::atomic<size_t> retry_timeout_ms_ = {15000};
     };
 }
 #endif // ASIO_REDIS_CLIENT_ASIO_REDIS_CLIENT_H

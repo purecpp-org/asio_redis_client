@@ -50,6 +50,10 @@ void get_set() {
     std::cout << "get result: " << value.toString() << '\n';
   });
 
+  client->command( "get", {"hello"}, 2,[](RedisValue value) {
+      std::cout << "get: " << value.toString() << '\n';
+  });
+
   client->del("hello", [](RedisValue value) {
     std::cout << "del: " << value.inspect() << '\n';
   });
