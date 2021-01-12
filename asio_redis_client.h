@@ -87,7 +87,7 @@ namespace purecpp {
           auto promise = std::make_shared<std::promise<bool>>();
           std::weak_ptr<std::promise<bool>> weak(promise);
 
-          async_connect(host, port, weak);
+          async_connect_inner(host, port, weak);
 
           auto future = promise->get_future();
           auto status = future.wait_for(std::chrono::seconds(timeout_seconds));
@@ -238,8 +238,53 @@ namespace purecpp {
           retry_timeout_ms_ = retry_timeout_ms;
         }
 
+        void async_connect(const std::string &host, unsigned short port, RedisCallback callback){
+          host_ = host;
+          port_ = port;
+
+          boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
+          auto self = this->shared_from_this();
+          resolver_.async_resolve(
+            query,
+            [this, self, callback](boost::system::error_code ec,
+                               const boost::asio::ip::tcp::resolver::iterator &it) {
+              if (ec) {
+                callback(RedisValue(ErrorCode::io_error, ec.message()));
+                return;
+              }
+
+              auto self = shared_from_this();
+              boost::asio::async_connect(
+                socket_, it,
+                [this, self, callback](boost::system::error_code ec,
+                  const boost::asio::ip::tcp::resolver::iterator &) {
+                  if (!ec) {
+                    if (has_connected_) {
+                      return;
+                    }
+
+                    has_connected_ = true;
+                    print("connect ok");
+                    resubscribe();
+                    retry_tasks_when_reconnected();
+                    do_read();
+                    callback(RedisValue(ErrorCode::no_error, "connect ok"));
+                  } else {
+                    print(ec.message());
+                    close_inner();
+                    if (enbale_auto_reconnect_) {
+                      print("auto reconnect");
+                      async_connect(host_, port_, std::move(callback));
+                    }else{
+                      callback(RedisValue(ErrorCode::io_error, "connect failed"));
+                    }
+                  }
+                });
+            });
+        }
+
     private:
-        void async_connect(const std::string &host, unsigned short port,
+        void async_connect_inner(const std::string &host, unsigned short port,
                            std::weak_ptr<std::promise<bool>> weak) {
           boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
           auto self = this->shared_from_this();
@@ -290,7 +335,7 @@ namespace purecpp {
 
         void async_reconnect() {
           reset_socket();
-          async_connect(host_, port_, {});
+          async_connect_inner(host_, port_, {});
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
 

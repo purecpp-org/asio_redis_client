@@ -52,8 +52,8 @@ namespace purecpp {
     }
 
     RedisValue(int error_code, const std::string &error_msg)
-            : value_(std::vector<char>(error_msg.begin(), error_msg.end())), error_(true), error_code_(error_code) {
-
+            : value_(std::vector<char>(error_msg.begin(), error_msg.end())), error_code_(error_code) {
+      error_ = (error_code_!=0);
     }
 
     RedisValue(const RedisValue &) = default;

@@ -23,6 +23,28 @@ std::shared_ptr<asio_redis_client> create_client(){
   return client;
 }
 
+void async_connect(){
+  auto client = std::make_shared<asio_redis_client>(ios);
+  client->enable_auto_reconnect(true);
+  client->async_connect(host_name, 6379, [client](RedisValue value){
+    if(value.isOk()){
+      client->set("hello", "world", [](RedisValue value) {
+        std::cout << "set: " << value.toString() << '\n';
+      });
+
+      client->get("hello", [](RedisValue value) {
+        std::cout << "get: " << value.toString() << '\n';
+      });
+    }
+  });
+
+  while(true){
+    std::string str;
+    std::cin >> str;
+  }
+
+}
+
 void get_set() {
   auto client = create_client();
 
@@ -209,6 +231,7 @@ void test_future() {
 }
 
 int main() {
+  async_connect();
 //  reconnect();
 //  reconnect_withtimes();
 //  get_set();
