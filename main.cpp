@@ -45,6 +45,23 @@ void async_connect(){
 
 }
 
+void test_retry(){
+  auto client = create_client();
+
+  client->command("get", {"hello"}, 2/*retry_times*/,[](RedisValue value) {
+    std::cout << "get result: " << value.toString() << '\n';
+  });
+
+  client->command("set", {"hello", "world"}, 2/*retry_times*/,[](RedisValue value) {
+    std::cout << "set: " << value.toString() << '\n';
+  });
+
+
+  std::string str;
+  std::cin >> str;
+
+}
+
 void get_set() {
   auto client = create_client();
 
@@ -231,10 +248,11 @@ void test_future() {
 }
 
 int main() {
-  async_connect();
+//  async_connect();
 //  reconnect();
 //  reconnect_withtimes();
-//  get_set();
+  test_retry();
+  get_set();
   pub_sub();
   callback_hell();
 

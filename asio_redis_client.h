@@ -17,682 +17,682 @@
 #endif
 
 namespace purecpp {
-    constexpr const char *CRCF = "\r\n";
-    constexpr const size_t CRCF_SIZE = 2;
-    using RedisCallback = std::function<void(RedisValue)>;
+constexpr const char *CRCF = "\r\n";
+constexpr const size_t CRCF_SIZE = 2;
+using RedisCallback = std::function<void(RedisValue)>;
 
-    struct retry_task_t{
-        size_t retry_times;
-        std::string cmd;
-        RedisCallback callback;
-        boost::asio::steady_timer timer;
-    };
-
-    template<typename... Args>
-    inline void print(Args &&... args) {
+template <typename... Args> inline void print(Args &&... args) {
 #ifdef DEBUG_INFO
-      (void)std::initializer_list<int>{
-          (std::cout << std::forward<Args>(args) << ' ', 0)...};
-      std::cout << "\n";
+  (void)std::initializer_list<int>{
+      (std::cout << std::forward<Args>(args) << ' ', 0)...};
+  std::cout << "\n";
 #endif
-      (void) sizeof...(args);
-    }
+  (void)sizeof...(args);
+}
 
-    template<typename Container>
-    inline std::string make_command(const Container &c) {
-      std::string result;
-      result.append("*").append(std::to_string(c.size())).append(CRCF);
+template <typename Container>
+inline std::string make_command(const Container &c) {
+  std::string result;
+  result.append("*").append(std::to_string(c.size())).append(CRCF);
 
-      for (const auto &item : c) {
-        result.append("$").append(std::to_string(item.size())).append(CRCF);
-        result.append(item).append(CRCF);
+  for (const auto &item : c) {
+    result.append("$").append(std::to_string(item.size())).append(CRCF);
+    result.append(item).append(CRCF);
+  }
+
+  return result;
+}
+
+class asio_redis_client
+    : public std::enable_shared_from_this<asio_redis_client> {
+public:
+  asio_redis_client(boost::asio::io_service &ios)
+      : ios_(ios), resolver_(ios), socket_(ios), work_(timer_ios_) {
+    std::thread thd([this] { timer_ios_.run(); });
+    thd.detach();
+  }
+
+  ~asio_redis_client() {
+    timer_ios_.stop();
+    close();
+  }
+
+  size_t connect_with_trytimes(const std::string &host, unsigned short port,
+                               size_t try_times) {
+    bool auto_reconnect = enbale_auto_reconnect_;
+    enbale_auto_reconnect_ = false;
+    size_t has_try = 0;
+    for (; has_try < try_times; has_try++) {
+      if (connect(host, port)) {
+        enbale_auto_reconnect_ = auto_reconnect;
+        return has_try;
       }
 
-      return result;
+      reset_socket();
+
+      print("retry times: ", has_try);
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
-    class asio_redis_client
-            : public std::enable_shared_from_this<asio_redis_client> {
-    public:
-        asio_redis_client(boost::asio::io_service &ios)
-                : ios_(ios), resolver_(ios), socket_(ios) {}
+    enbale_auto_reconnect_ = auto_reconnect;
+    return has_try;
+  }
 
-        ~asio_redis_client() { close(); }
+  bool connect(const std::string &host, unsigned short port,
+               size_t timeout_seconds = 3) {
+    host_ = host;
+    port_ = port;
+    auto promise = std::make_shared<std::promise<bool>>();
+    std::weak_ptr<std::promise<bool>> weak(promise);
 
-        size_t connect_with_trytimes(const std::string &host, unsigned short port,
-                                     size_t try_times) {
-          bool auto_reconnect = enbale_auto_reconnect_;
-          enbale_auto_reconnect_ = false;
-          size_t has_try = 0;
-          for (; has_try < try_times; has_try++) {
-            if (connect(host, port)) {
-              enbale_auto_reconnect_ = auto_reconnect;
-              return has_try;
-            }
+    async_connect_inner(host, port, weak);
 
-            reset_socket();
+    auto future = promise->get_future();
+    auto status = future.wait_for(std::chrono::seconds(timeout_seconds));
+    if (status == std::future_status::timeout) {
+      print("connect timeout");
+      promise = nullptr;
+      close_inner();
+      return false;
+    }
 
-            print("retry times: ", has_try);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-          }
-
-          enbale_auto_reconnect_ = auto_reconnect;
-          return has_try;
-        }
-
-        bool connect(const std::string &host, unsigned short port,
-                     size_t timeout_seconds = 3) {
-          host_ = host;
-          port_ = port;
-          auto promise = std::make_shared<std::promise<bool>>();
-          std::weak_ptr<std::promise<bool>> weak(promise);
-
-          async_connect_inner(host, port, weak);
-
-          auto future = promise->get_future();
-          auto status = future.wait_for(std::chrono::seconds(timeout_seconds));
-          if (status == std::future_status::timeout) {
-            print("connect timeout");
-            promise = nullptr;
-            close_inner();
-            return false;
-          }
-
-          bool r = future.get();
-          promise = nullptr;
-          return r;
-        }
+    bool r = future.get();
+    promise = nullptr;
+    return r;
+  }
 
 #ifdef USE_FUTURE
-        Future<RedisValue> auth(const std::string &password) {
-          password_ = password;
-          std::vector<std::string> v{"AUTH", password};
-          return command(make_command(v));
-        }
+  Future<RedisValue> auth(const std::string &password) {
+    password_ = password;
+    std::vector<std::string> v{"AUTH", password};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> get(const std::string &key) {
-          std::vector<std::string> v{"GET", key};
-          return command(make_command(v));
-        }
+  Future<RedisValue> get(const std::string &key) {
+    std::vector<std::string> v{"GET", key};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> set(const std::string &key, const std::string &value) {
-          std::vector<std::string> v{"SET", key, value};
-          return command(make_command(v));
-        }
+  Future<RedisValue> set(const std::string &key, const std::string &value) {
+    std::vector<std::string> v{"SET", key, value};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> del(const std::string &key) {
-          std::vector<std::string> v{"DEL", key};
-          return command(make_command(v));
-        }
+  Future<RedisValue> del(const std::string &key) {
+    std::vector<std::string> v{"DEL", key};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> ping() {
-          std::vector<std::string> v{"PING"};
-          return command(make_command(v));
-        }
+  Future<RedisValue> ping() {
+    std::vector<std::string> v{"PING"};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> command(const std::string &cmd, std::deque<std::string> args) {
-          args.push_front(cmd);
-          return command(make_command(args));
-        }
+  Future<RedisValue> command(const std::string &cmd,
+                             std::deque<std::string> args) {
+    args.push_front(cmd);
+    return command(make_command(args));
+  }
 
-        Future<RedisValue> unsubscribe(const std::string &key) {
-          std::vector<std::string> v{"UNSUBSCRIBE", key};
-          return command(make_command(v));
-        }
+  Future<RedisValue> unsubscribe(const std::string &key) {
+    std::vector<std::string> v{"UNSUBSCRIBE", key};
+    return command(make_command(v));
+  }
 
-        Future<RedisValue> punsubscribe(const std::string &key) {
-          std::vector<std::string> v{"PUNSUBSCRIBE", key};
-          return command(make_command(v));
-        }
+  Future<RedisValue> punsubscribe(const std::string &key) {
+    std::vector<std::string> v{"PUNSUBSCRIBE", key};
+    return command(make_command(v));
+  }
 #endif
 
-        void command(const std::string &cmd, std::deque<std::string> args, RedisCallback callback) {
-          args.push_front(cmd);
-          return command(make_command(args), std::move(callback));
-        }
+  void command(const std::string &cmd, std::deque<std::string> args,
+               RedisCallback callback) {
+    args.push_front(cmd);
+    return command(make_command(args), std::move(callback));
+  }
 
-        template<typename T, typename = typename std::enable_if<
-                std::is_arithmetic<T>::value>::type>
-        void set(const std::string &key, const T &value, RedisCallback callback) {
-          std::vector<std::string> v{"SET", key, std::to_string(value)};
-          command(make_command(v), std::move(callback));
-        }
+  template <typename T, typename = typename std::enable_if<
+                            std::is_arithmetic<T>::value>::type>
+  void set(const std::string &key, const T &value, RedisCallback callback) {
+    std::vector<std::string> v{"SET", key, std::to_string(value)};
+    command(make_command(v), std::move(callback));
+  }
 
-        void set(const std::string &key, const std::string &value,
-                 RedisCallback callback) {
-          std::vector<std::string> v{"SET", key, value};
-          command(make_command(v), std::move(callback));
-        }
+  void set(const std::string &key, const std::string &value,
+           RedisCallback callback) {
+    std::vector<std::string> v{"SET", key, value};
+    command(make_command(v), std::move(callback));
+  }
 
-        void del(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"DEL", key};
-          command(make_command(v), std::move(callback));
-        }
+  void del(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"DEL", key};
+    command(make_command(v), std::move(callback));
+  }
 
-        void ping(RedisCallback callback) {
-          std::vector<std::string> v{"PING"};
-          command(make_command(v), std::move(callback));
-        }
+  void ping(RedisCallback callback) {
+    std::vector<std::string> v{"PING"};
+    command(make_command(v), std::move(callback));
+  }
 
-        void auth(const std::string &password, RedisCallback callback) {
-          password_ = password;
-          auth_callback_ = callback;
-          std::vector<std::string> v{"AUTH", password};
-          command(make_command(v), std::move(callback));
-        }
+  void auth(const std::string &password, RedisCallback callback) {
+    password_ = password;
+    auth_callback_ = callback;
+    std::vector<std::string> v{"AUTH", password};
+    command(make_command(v), std::move(callback));
+  }
 
-        void get(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"GET", key};
-          command(make_command(v), std::move(callback));
-        }
+  void get(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"GET", key};
+    command(make_command(v), std::move(callback));
+  }
 
-        void publish(const std::string &channel, const std::string &msg,
+  void publish(const std::string &channel, const std::string &msg,
+               RedisCallback callback) {
+    std::vector<std::string> v{"PUBLISH", channel, msg};
+    command(make_command(v), std::move(callback));
+  }
+
+  void subscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"SUBSCRIBE", key};
+    command(make_command(v), std::move(callback), key);
+  }
+
+  void psubscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"PSUBSCRIBE", key};
+    command(make_command(v), std::move(callback), key);
+  }
+
+  void unsubscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"UNSUBSCRIBE", key};
+    command(make_command(v), std::move(callback));
+  }
+
+  void punsubscribe(const std::string &key, RedisCallback callback) {
+    std::vector<std::string> v{"PUNSUBSCRIBE", key};
+    command(make_command(v), std::move(callback));
+  }
+
+  void command(const std::string &key, std::deque<std::string> args,
+               size_t retry_times, RedisCallback callback) {
+    args.push_front(key);
+    auto cmd = make_command(args);
+    auto init_time = std::chrono::steady_clock::now();
+    command_inner(init_time, cmd, retry_times, std::move(callback));
+  }
+
+  void enable_auto_reconnect(bool enable) { enbale_auto_reconnect_ = enable; }
+
+  void close() {
+    enbale_auto_reconnect_ = false;
+    close_inner();
+  }
+
+  bool has_connected() const { return has_connected_; }
+
+  void set_retry_timeout_ms(int64_t retry_timeout_ms) {
+    retry_timeout_ms_ = retry_timeout_ms;
+  }
+
+  void async_connect(const std::string &host, unsigned short port,
                      RedisCallback callback) {
-          std::vector<std::string> v{"PUBLISH", channel, msg};
-          command(make_command(v), std::move(callback));
-        }
+    host_ = host;
+    port_ = port;
 
-        void subscribe(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"SUBSCRIBE", key};
-          command(make_command(v), std::move(callback), key);
-        }
-
-        void psubscribe(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"PSUBSCRIBE", key};
-          command(make_command(v), std::move(callback), key);
-        }
-
-        void unsubscribe(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"UNSUBSCRIBE", key};
-          command(make_command(v), std::move(callback));
-        }
-
-        void punsubscribe(const std::string &key, RedisCallback callback) {
-          std::vector<std::string> v{"PUNSUBSCRIBE", key};
-          command(make_command(v), std::move(callback));
-        }
-
-        void command(const std::string &key, std::deque<std::string> args, size_t retry_times, RedisCallback callback) {
-          args.push_front(key);
-          auto cmd = make_command(args);
-          if (retry_times > 0) {
-            retry_tasks_.emplace_back(retry_task_t{retry_times + 1, cmd, callback, create_timer()});
-            command(cmd, nullptr);
-          } else {
-            command(cmd, std::move(callback));
+    boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
+    auto self = this->shared_from_this();
+    resolver_.async_resolve(
+        query, [this, self,
+                callback](boost::system::error_code ec,
+                          const boost::asio::ip::tcp::resolver::iterator &it) {
+          if (ec) {
+            callback(RedisValue(ErrorCode::io_error, ec.message()));
+            return;
           }
-        }
 
-        void enable_auto_reconnect(bool enable) { enbale_auto_reconnect_ = enable; }
-
-        void close() {
-          enbale_auto_reconnect_ = false;
-          close_inner();
-        }
-
-        bool has_connected() const {
-          return has_connected_;
-        }
-
-        void set_retry_timeout_ms(size_t retry_timeout_ms){
-          retry_timeout_ms_ = retry_timeout_ms;
-        }
-
-        void async_connect(const std::string &host, unsigned short port, RedisCallback callback){
-          host_ = host;
-          port_ = port;
-
-          boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
-          auto self = this->shared_from_this();
-          resolver_.async_resolve(
-            query,
-            [this, self, callback](boost::system::error_code ec,
-                               const boost::asio::ip::tcp::resolver::iterator &it) {
-              if (ec) {
-                callback(RedisValue(ErrorCode::io_error, ec.message()));
-                return;
-              }
-
-              auto self = shared_from_this();
-              boost::asio::async_connect(
-                socket_, it,
-                [this, self, callback](boost::system::error_code ec,
-                  const boost::asio::ip::tcp::resolver::iterator &) {
-                  if (!ec) {
-                    if (has_connected_) {
-                      return;
-                    }
-
-                    has_connected_ = true;
-                    print("connect ok");
-                    resubscribe();
-                    retry_tasks_when_reconnected();
-                    do_read();
-                    callback(RedisValue(ErrorCode::no_error, "connect ok"));
-                  } else {
-                    print(ec.message());
-                    close_inner();
-                    if (enbale_auto_reconnect_) {
-                      print("auto reconnect");
-                      async_connect(host_, port_, std::move(callback));
-                    }else{
-                      callback(RedisValue(ErrorCode::io_error, "connect failed"));
-                    }
+          auto self = shared_from_this();
+          boost::asio::async_connect(
+              socket_, it,
+              [this, self,
+               callback](boost::system::error_code ec,
+                         const boost::asio::ip::tcp::resolver::iterator &) {
+                if (!ec) {
+                  if (has_connected_) {
+                    return;
                   }
-                });
-            });
-        }
 
-    private:
-        void async_connect_inner(const std::string &host, unsigned short port,
-                           std::weak_ptr<std::promise<bool>> weak) {
-          boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
-          auto self = this->shared_from_this();
-          resolver_.async_resolve(
-                  query,
-                  [this, self, weak](boost::system::error_code ec,
-                                     const boost::asio::ip::tcp::resolver::iterator &it) {
-                      if (ec) {
-                        auto sp = weak.lock();
-                        if (sp) {
-                          sp->set_value(false);
-                        }
-
-                        return;
-                      }
-
-                      auto self = shared_from_this();
-                      boost::asio::async_connect(
-                              socket_, it,
-                              [this, self,
-                                      weak](boost::system::error_code ec,
-                                            const boost::asio::ip::tcp::resolver::iterator &) {
-                                  if (!ec) {
-                                    if (has_connected_) {
-                                      return;
-                                    }
-
-                                    has_connected_ = true;
-                                    print("connect ok");
-                                    resubscribe();
-                                    retry_tasks_when_reconnected();
-                                    do_read();
-                                  } else {
-                                    print(ec.message());
-                                    close_inner();
-                                    if (enbale_auto_reconnect_) {
-                                      print("auto reconnect");
-                                      async_reconnect();
-                                    }
-                                  }
-
-                                  auto sp = weak.lock();
-                                  if (sp)
-                                    sp->set_value(has_connected_);
-                              });
-                  });
-        }
-
-        void async_reconnect() {
-          reset_socket();
-          async_connect_inner(host_, port_, {});
-          std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        }
-
-        void resubscribe() {
-          if (!password_.empty()) {
-            auto self = shared_from_this();
-            assert(auth_callback_);
-            auth(password_, std::move(auth_callback_));
-          }
-
-          if (sub_handlers_.empty()) {
-            return;
-          }
-
-          for (auto &pair : sub_handlers_) {
-            if (pair.first.find("*") != std::string::npos) { // improve later
-              psubscribe(pair.first, pair.second);
-            } else {
-              subscribe(pair.first, pair.second);
-            }
-          }
-        }
-
-        void do_read() {
-          auto self = shared_from_this();
-          async_read_some([this, self](boost::system::error_code ec, size_t size) {
-              if (ec) {
-                handle_io_error(ec);
-
-                close_inner();
-                if (enbale_auto_reconnect_) {
-                  async_reconnect();
-                }
-                return;
-              }
-
-              for (size_t pos = 0; pos < size;) {
-                std::pair<size_t, RedisParser::ParseResult> result =
-                        parser_.parse(read_buf_.data() + pos, size - pos);
-
-                if (result.second == RedisParser::Completed) {
-                  handle_message(parser_.result());
-                } else if (result.second == RedisParser::Incompleted) {
+                  has_connected_ = true;
+                  print("connect ok");
+                  resubscribe();
                   do_read();
-                  return;
+                  callback(RedisValue(ErrorCode::no_error, "connect ok"));
                 } else {
-                  handle_message(RedisValue(ErrorCode::redis_parse_error, "redis parse error"));
-                  return;
+                  print(ec.message());
+                  close_inner();
+                  if (enbale_auto_reconnect_) {
+                    print("auto reconnect");
+                    async_connect(host_, port_, std::move(callback));
+                  } else {
+                    callback(RedisValue(ErrorCode::io_error, "connect failed"));
+                  }
+                }
+              });
+        });
+  }
+
+private:
+  void async_connect_inner(const std::string &host, unsigned short port,
+                           std::weak_ptr<std::promise<bool>> weak) {
+    boost::asio::ip::tcp::resolver::query query(host, std::to_string(port));
+    auto self = this->shared_from_this();
+    resolver_.async_resolve(
+        query,
+        [this, self, weak](boost::system::error_code ec,
+                           const boost::asio::ip::tcp::resolver::iterator &it) {
+          if (ec) {
+            auto sp = weak.lock();
+            if (sp) {
+              sp->set_value(false);
+            }
+
+            return;
+          }
+
+          auto self = shared_from_this();
+          boost::asio::async_connect(
+              socket_, it,
+              [this, self,
+               weak](boost::system::error_code ec,
+                     const boost::asio::ip::tcp::resolver::iterator &) {
+                if (!ec) {
+                  if (has_connected_) {
+                    return;
+                  }
+
+                  has_connected_ = true;
+                  print("connect ok");
+                  resubscribe();
+                  do_read();
+                } else {
+                  print(ec.message());
+                  close_inner();
+                  if (enbale_auto_reconnect_) {
+                    print("auto reconnect");
+                    async_reconnect();
+                  }
                 }
 
-                pos += result.first;
-              }
+                auto sp = weak.lock();
+                if (sp)
+                  sp->set_value(has_connected_);
+              });
+        });
+  }
 
-              do_read();
-          });
+  void async_reconnect() {
+    reset_socket();
+    async_connect_inner(host_, port_, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  }
+
+  void resubscribe() {
+    if (!password_.empty()) {
+      auto self = shared_from_this();
+      assert(auth_callback_);
+      auth(password_, std::move(auth_callback_));
+    }
+
+    if (sub_handlers_.empty()) {
+      return;
+    }
+
+    for (auto &pair : sub_handlers_) {
+      if (pair.first.find("*") != std::string::npos) { // improve later
+        psubscribe(pair.first, pair.second);
+      } else {
+        subscribe(pair.first, pair.second);
+      }
+    }
+  }
+
+  void do_read() {
+    auto self = shared_from_this();
+    async_read_some([this, self](boost::system::error_code ec, size_t size) {
+      if (ec) {
+        handle_io_error(ec);
+
+        close_inner();
+        if (enbale_auto_reconnect_) {
+          async_reconnect();
+        }
+        return;
+      }
+
+      for (size_t pos = 0; pos < size;) {
+        std::pair<size_t, RedisParser::ParseResult> result =
+            parser_.parse(read_buf_.data() + pos, size - pos);
+
+        if (result.second == RedisParser::Completed) {
+          handle_message(parser_.result());
+        } else if (result.second == RedisParser::Incompleted) {
+          do_read();
+          return;
+        } else {
+          handle_message(
+              RedisValue(ErrorCode::redis_parse_error, "redis parse error"));
+          return;
         }
 
-        void close_inner() {
-          if (!has_connected_)
-            return;
+        pos += result.first;
+      }
 
-          has_connected_ = false;
+      do_read();
+    });
+  }
 
-          clear_outbox_and_handlers();
+  void close_inner() {
+    if (!has_connected_)
+      return;
 
-          boost::system::error_code ec;
-          // timer_.cancel(ec);
-          socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-          socket_.close(ec);
+    has_connected_ = false;
+
+    clear_outbox_and_handlers();
+
+    boost::system::error_code ec;
+    // timer_.cancel(ec);
+    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    socket_.close(ec);
+  }
+
+  void reset_socket() {
+    socket_ = decltype(socket_)(ios_);
+    if (!socket_.is_open()) {
+      socket_.open(boost::asio::ip::tcp::v4());
+    }
+  }
+
+  bool is_subscribe(const std::string &cmd) {
+    if (cmd == "subscribe" || cmd == "psubscribe" || cmd == "message" ||
+        cmd == "pmessage") {
+      return true;
+    }
+
+    return false;
+  }
+
+  void handle_array_msg(RedisValue v) {
+    std::vector<RedisValue> array = v.toArray();
+    auto &value = array[0];
+    std::string cmd = value.toString();
+    if (is_subscribe(cmd)) {
+      if (array.size() < 3) {
+        // error, not redis protocol
+        return;
+      }
+
+      handle_subscribe_msg(std::move(cmd), std::move(array));
+    } else {
+      handle_non_subscribe_msg(std::move(v));
+    }
+  }
+
+  void handle_subscribe_msg(std::string cmd, std::vector<RedisValue> array) {
+    std::string subscribe_key = array[1].toString();
+    RedisValue value;
+    if (cmd == "subscribe" || cmd == "psubscribe") {
+      // reply subscribe
+      print(cmd);
+      return;
+    } else if (cmd == "message") {
+      value = std::move(array[2]);
+    } else { // pmessage
+      value = std::move(array[3]);
+    }
+
+    std::function<void(RedisValue)> *callback = nullptr;
+    {
+      assert(!sub_handlers_.empty());
+      auto it = sub_handlers_.find(subscribe_key);
+      if (it != sub_handlers_.end()) {
+        callback = &it->second;
+      } else {
+        print("subscibe key: ", subscribe_key, " not found");
+      }
+    }
+
+    if (callback) {
+      try {
+        auto &cb = *callback;
+        if (cb) {
+          cb(std::move(value));
         }
+      } catch (std::exception &e) {
+        print(e.what());
+      } catch (...) {
+        print("unknown exception");
+      }
+    }
+  }
 
-        void reset_socket() {
-          socket_ = decltype(socket_)(ios_);
-          if (!socket_.is_open()) {
-            socket_.open(boost::asio::ip::tcp::v4());
-          }
+  void handle_non_subscribe_msg(RedisValue value) {
+    std::function<void(RedisValue)> front = nullptr;
+    {
+      std::unique_lock<std::mutex> lock(write_mtx_);
+      if (handlers_.empty()) {
+        print("warning! no handler deal with this value : ", value.inspect());
+        return;
+      }
+
+      front = std::move(handlers_.front());
+      handlers_.pop_front();
+    }
+
+    try {
+      if (front) {
+        front(std::move(value));
+      }
+    } catch (std::exception &e) {
+      print(e.what());
+    } catch (...) {
+      print("unknown exception");
+    }
+  }
+
+  void handle_message(RedisValue v) {
+    if (v.isArray()) {
+      handle_array_msg(std::move(v));
+    } else {
+      handle_non_subscribe_msg(std::move(v));
+    }
+  }
+
+  template <typename T>
+  void command_inner(T init_time, const std::string &cmd, size_t retry_times,
+                     RedisCallback callback) {
+    if (retry_times > 0) {
+      command(cmd, [this, init_time, retry_times, cmd,
+          callback](RedisValue value) mutable {
+        if (value.IsIOError()) {
+          retry(init_time, std::move(cmd), retry_times, std::move(callback));
+        } else {
+          callback(value);
         }
+      });
+    } else {
+      //finished retry now, don't retry anymore.
+      command(cmd, std::move(callback));
+    }
+  }
 
-        bool is_subscribe(const std::string &cmd) {
-          if (cmd == "subscribe" || cmd == "psubscribe" || cmd == "message" ||
-              cmd == "pmessage") {
-            return true;
-          }
+  template <typename T>
+  void retry(T init_time, std::string cmd, size_t retry_times,
+             RedisCallback callback) {
+    assert(retry_times > 0);
 
-          return false;
-        }
+    auto timer = std::make_shared<boost::asio::steady_timer>(
+        timer_ios_, std::chrono::milliseconds(200));
+    timer->async_wait([timer, this, init_time, retry_times, cmd,
+                          callback](boost::system::error_code ec) mutable {
+      if (ec) {
+        // cancel
+        return;
+      }
 
-        void handle_array_msg(RedisValue v) {
-          std::vector<RedisValue> array = v.toArray();
-          auto &value = array[0];
-          std::string cmd = value.toString();
-          if (is_subscribe(cmd)) {
-            if (array.size() < 3) {
-              // error, not redis protocol
-              return;
-            }
+      auto now = std::chrono::steady_clock::now();
+      int64_t elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - init_time)
+              .count();
+      if (elapsed >= retry_timeout_ms_) {
+        callback(RedisValue(ErrorCode::timeout, "retry timeout"));
+        return;
+      }
 
-            handle_subscribe_msg(std::move(cmd), std::move(array));
-          } else {
-            handle_non_subscribe_msg(std::move(v));
-          }
-        }
+      if (has_connected_) {
+        retry_times--;
+        print("retry times: ", retry_times);
+        command_inner(init_time, cmd, retry_times, std::move(callback));
+      } else {
+        retry(init_time, std::move(cmd), retry_times, std::move(callback));
+      }
+    });
+  }
 
-        void handle_subscribe_msg(std::string cmd, std::vector<RedisValue> array) {
-          std::string subscribe_key = array[1].toString();
-          RedisValue value;
-          if (cmd == "subscribe" || cmd == "psubscribe") {
-            // reply subscribe
-            print(cmd);
-            return;
-          } else if (cmd == "message") {
-            value = std::move(array[2]);
-          } else { // pmessage
-            value = std::move(array[3]);
-          }
+  void write() {
+    auto &msg = outbox_[0];
+    auto self = shared_from_this();
+    async_write(msg, [this, self](const boost::system::error_code &ec, size_t) {
+      if (ec) {
+        print(ec.message());
+        handle_io_error(ec);
+        close_inner();
+        return;
+      }
 
-          std::function<void(RedisValue)> *callback = nullptr;
-          {
-            assert(!sub_handlers_.empty());
-            auto it = sub_handlers_.find(subscribe_key);
-            if (it != sub_handlers_.end()) {
-              callback = &it->second;
-            } else {
-              print("subscibe key: ", subscribe_key, " not found");
-            }
-          }
+      std::unique_lock<std::mutex> lock(write_mtx_);
+      if (outbox_.empty()) {
+        return;
+      }
 
-          if (callback) {
-            try {
-              auto &cb = *callback;
-              if (cb) {
-                cb(std::move(value));
-              }
-            } catch (std::exception &e) {
-              print(e.what());
-            } catch (...) {
-              print("unknown exception");
-            }
-          }
-        }
+      outbox_.pop_front();
 
-        void handle_non_subscribe_msg(RedisValue value) {
-          std::function<void(RedisValue)> front = nullptr;
-          {
-            std::unique_lock<std::mutex> lock(write_mtx_);
-            if(!retry_tasks_.empty()) {
-              handle_retry_task(std::move(value));
-              return;
-            }
-            if (handlers_.empty()) {
-              print("warning! no handler deal with this value : ", value.inspect());
-              return;
-            }
+      if (!outbox_.empty()) {
+        // more messages to send
+        write();
+      }
+    });
+  }
 
-            front = std::move(handlers_.front());
-            handlers_.pop_front();
-          }
+  void clear_outbox_and_handlers() {
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    if (!handlers_.empty()) {
+      handlers_.clear();
+    }
+    if (!outbox_.empty()) {
+      outbox_.clear();
+    }
+  }
 
-          try {
-            if (front) {
-              front(std::move(value));
-            }
-          } catch (std::exception &e) {
-            print(e.what());
-          } catch (...) {
-            print("unknown exception");
-          }
-        }
+  void handle_io_error(const boost::system::error_code &ec) {
+    has_connected_ = false;
+    std::unique_lock<std::mutex> lock(write_mtx_);
 
-        void handle_message(RedisValue v) {
-          if (v.isArray()) {
-            handle_array_msg(std::move(v));
-          } else {
-            handle_non_subscribe_msg(std::move(v));
-          }
-        }
+    for (auto &handler : handlers_) {
+      handler(RedisValue(ErrorCode::io_error, ec.message()));
+    }
+    handlers_.clear();
+    outbox_.clear();
+  }
 
-        void write() {
-          auto &msg = outbox_[0];
-          auto self = shared_from_this();
-          async_write(msg, [this, self](const boost::system::error_code &ec, size_t) {
-              if (ec) {
-                print(ec.message());
-                handle_io_error(ec);
-                close_inner();
-                return;
-              }
+  boost::asio::steady_timer create_timer() {
+    boost::asio::steady_timer timer(
+        ios_, std::chrono::milliseconds(retry_timeout_ms_));
 
-              std::unique_lock<std::mutex> lock(write_mtx_);
-              if (outbox_.empty()) {
-                return;
-              }
+    timer.async_wait([](const boost::system::error_code &ec) {
+      if (ec) {
+        return;
+      }
 
-              outbox_.pop_front();
+      // handle_timeout();
+    });
 
-              if (!outbox_.empty()) {
-                // more messages to send
-                write();
-              }
-          });
-        }
+    return timer;
+  }
 
-        void clear_outbox_and_handlers() {
-          std::unique_lock<std::mutex> lock(write_mtx_);
-          if (!handlers_.empty()) {
-            handlers_.clear();
-          }
-          if (!outbox_.empty()) {
-            outbox_.clear();
-          }
-        }
+  template <typename Handler> void async_read_some(Handler handler) {
+    socket_.async_read_some(boost::asio::buffer(read_buf_), std::move(handler));
+  }
 
-        void handle_io_error(const boost::system::error_code &ec){
-          std::unique_lock<std::mutex> lock(write_mtx_);
+  template <typename Handler>
+  void async_write(const std::string &msg, Handler handler) {
+    boost::asio::async_write(socket_, boost::asio::buffer(msg),
+                             std::move(handler));
+  }
 
-          if(!retry_tasks_.empty()){
-            handle_retry_tasks_when_io_error(ec);
-            return;
-          }
+  void command(const std::string &cmd, RedisCallback callback,
+               std::string sub_key = "") {
+    std::unique_lock<std::mutex> lock(write_mtx_);
+    outbox_.emplace_back(cmd);
 
-          for (auto &handler : handlers_) {
-            handler(RedisValue(ErrorCode::io_error, ec.message()));
-          }
-        }
+    if (callback != nullptr) {
+      if (sub_key.empty()) {
+        handlers_.emplace_back(std::move(callback));
+      } else {
+        sub_handlers_.emplace(std::move(sub_key), std::move(callback));
+      }
+    }
 
-        void handle_retry_tasks_when_io_error(const boost::system::error_code &ec){
-          for (auto i = retry_tasks_.begin(); i != retry_tasks_.end() ; ) {
-            i->retry_times--;
-            if(i->retry_times > 0){
-              ++i;
-              continue;
-            }
+    if (outbox_.size() > 1) {
+      return;
+    }
 
-            if (i->retry_times == 0){
-              i->callback(RedisValue(ErrorCode::io_error, ec.message()));
-              i = retry_tasks_.erase(i);
-            }
-            else{
-              ++i;
-            }
-          }
-        }
-
-        void handle_retry_task(RedisValue value){
-          auto &task = retry_tasks_.back();
-          task.timer.cancel();
-          task.callback(std::move(value));
-          retry_tasks_.pop_back();
-        }
-
-        boost::asio::steady_timer create_timer() {
-          boost::asio::steady_timer timer(ios_, std::chrono::milliseconds(retry_timeout_ms_));
-
-          timer.async_wait([this](const boost::system::error_code &ec) {
-              if (ec) {
-                return;
-              }
-
-              handle_timeout();
-          });
-
-          return timer;
-        }
-
-        void handle_timeout(){
-          std::unique_lock<std::mutex> lock(write_mtx_);
-          if(retry_tasks_.empty()){
-            return;
-          }
-
-          auto &task = retry_tasks_.back();
-          task.callback(RedisValue(ErrorCode::io_error, "request timeout"));
-          retry_tasks_.pop_back();
-        }
-
-        void retry_tasks_when_reconnected(){
-          for(auto& task : retry_tasks_){
-            command(task.cmd, nullptr);
-          }
-        }
-
-        template<typename Handler>
-        void async_read_some(Handler handler) {
-          socket_.async_read_some(boost::asio::buffer(read_buf_), std::move(handler));
-        }
-
-        template<typename Handler>
-        void async_write(const std::string &msg, Handler handler) {
-          boost::asio::async_write(socket_, boost::asio::buffer(msg),
-                                   std::move(handler));
-        }
-
-        void command(const std::string &cmd, RedisCallback callback,
-                     std::string sub_key = "") {
-          std::unique_lock<std::mutex> lock(write_mtx_);
-          outbox_.emplace_back(cmd);
-
-          if(callback!= nullptr){
-            if (sub_key.empty()) {
-              handlers_.emplace_back(std::move(callback));
-            } else {
-              sub_handlers_.emplace(std::move(sub_key), std::move(callback));
-            }
-          }
-
-          if (outbox_.size() > 1) {
-            return;
-          }
-
-          write();
-        }
+    write();
+  }
 
 #ifdef USE_FUTURE
-        Future<RedisValue> command(const std::string &cmd) {
-          if (!has_connected_) {
-            return {};
-          }
+  Future<RedisValue> command(const std::string &cmd) {
+    if (!has_connected_) {
+      return {};
+    }
 
-          std::shared_ptr<purecpp::Promise<RedisValue>> promise =
-                  std::make_shared<purecpp::Promise<RedisValue>>();
-          auto callback = [promise](RedisValue value) {
-              promise->SetValue(std::move(value));
-          };
+    std::shared_ptr<purecpp::Promise<RedisValue>> promise =
+        std::make_shared<purecpp::Promise<RedisValue>>();
+    auto callback = [promise](RedisValue value) {
+      promise->SetValue(std::move(value));
+    };
 
-          {
-            std::unique_lock<std::mutex> lock(write_mtx_);
-            outbox_.emplace_back(cmd);
-            handlers_.emplace_back(std::move(callback));
+    {
+      std::unique_lock<std::mutex> lock(write_mtx_);
+      outbox_.emplace_back(cmd);
+      handlers_.emplace_back(std::move(callback));
 
-            if (outbox_.size() <= 1) {
-              write();
-            }
-          }
+      if (outbox_.size() <= 1) {
+        write();
+      }
+    }
 
-          return promise->GetFuture();
-        }
+    return promise->GetFuture();
+  }
 #endif
 
-        boost::asio::io_service &ios_;
-        boost::asio::ip::tcp::resolver resolver_;
-        boost::asio::ip::tcp::socket socket_;
-        std::atomic_bool has_connected_ = {false};
+  boost::asio::io_service &ios_;
+  boost::asio::ip::tcp::resolver resolver_;
+  boost::asio::ip::tcp::socket socket_;
+  std::atomic_bool has_connected_ = {false};
 
-        std::deque<std::string> outbox_;
-        std::mutex write_mtx_;
-        std::array<char, 4096> read_buf_;
-        RedisParser parser_;
-        std::deque<std::function<void(RedisValue)>> handlers_;
-        std::map<std::string, std::function<void(RedisValue)>> sub_handlers_;
-        bool enbale_auto_reconnect_ = false;
-        std::string host_;
-        unsigned short port_;
-        std::string password_;
-        RedisCallback auth_callback_ = nullptr;
+  std::deque<std::string> outbox_;
+  std::mutex write_mtx_;
+  std::array<char, 4096> read_buf_;
+  RedisParser parser_;
+  std::deque<std::function<void(RedisValue)>> handlers_;
+  std::map<std::string, std::function<void(RedisValue)>> sub_handlers_;
+  bool enbale_auto_reconnect_ = false;
+  std::string host_;
+  unsigned short port_;
+  std::string password_;
+  RedisCallback auth_callback_ = nullptr;
 
-        std::deque<retry_task_t> retry_tasks_;
-        std::atomic<size_t> retry_timeout_ms_ = {15000};
-    };
+  std::atomic<int64_t> retry_timeout_ms_ = {15000};
+  boost::asio::io_context timer_ios_;
+  boost::asio::io_context::work work_;
+};
 }
 #endif // ASIO_REDIS_CLIENT_ASIO_REDIS_CLIENT_H
